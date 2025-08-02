@@ -2,7 +2,7 @@ pub mod shared_memory {
     use std::io::{Error, ErrorKind};
     use std::fs;
 
-    const PAGE_SIZE: usize = 0x1000;
+    pub const PAGE_SIZE: usize = 0x1000;
     const PHYS_MEM_SIZE: usize = 0x100000;
 
     macro_rules! set_bit {
@@ -39,8 +39,8 @@ pub mod shared_memory {
     /// are available to be mapped to a virtual address
 
     pub struct SharedMemory {
-        phys_mem: Vec<u8>,
-        page_table_entries: Vec<Vec<u32>>,
+        pub phys_mem: Vec<u8>,
+        pub page_table_entries: Vec<Vec<u32>>,
         phys_bitmap: u128,
     }
 
@@ -113,6 +113,35 @@ pub mod shared_memory {
             Ok(vaddr as u32)
             //Ok(mem.page_table_entries[page_table_index][page_entry_index])
         }
+        /// vaddr_to_pte should take a vaddr and return a mutable slice
+        /// reference to the memory associated with it
+        pub fn vaddr_to_pte(&mut self, addr: u32) -> Result<&mut [u8], Error> {
+            let pgd_idx = (addr >> 16) as usize;
+            let pte_idx = ((addr >> 12) & 0x0F) as usize;
+
+            let pte = self
+                .page_table_entries
+                .get(pgd_idx)
+                .ok_or_else(|| Error::new(ErrorKind::Other, "PGD index out of bounds"))?;
+
+            let phys_page = pte
+                .get(pte_idx)
+                .ok_or_else(|| Error::new(ErrorKind::Other, "PTE index out of bounds"))?;
+
+            let phy_addr = *phys_page as usize;
+
+            let end = phy_addr
+                .checked_add(PAGE_SIZE)
+                .ok_or_else(|| Error::new(ErrorKind::Other, "overflow computing write range"))?;
+
+            if end > self.phys_mem.len() {
+                return Err(Error::new(ErrorKind::Other, "write exceeds physical memory"));
+            }
+
+            Ok(self.phys_mem[phy_addr..end].as_mut())
+
+        }
+
 
         /// write will be our primary function for writing data into memory
         /// it will take a mutable reference to the SharedMemory object of 

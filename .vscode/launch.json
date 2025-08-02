@@ -7,15 +7,15 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug executable 'mem'",
+            "name": "Debug executable 'chip8_runtime'",
             "cargo": {
                 "args": [
                     "build",
-                    "--bin=mem",
-                    "--package=mem"
+                    "--bin=chip8_runtime",
+                    "--package=chip8_runtime"
                 ],
                 "filter": {
-                    "name": "mem",
+                    "name": "chip8_runtime",
                     "kind": "bin"
                 }
             },
@@ -25,16 +25,16 @@
         {
             "type": "lldb",
             "request": "launch",
-            "name": "Debug unit tests in executable 'mem'",
+            "name": "Debug unit tests in executable 'chip8_runtime'",
             "cargo": {
                 "args": [
                     "test",
                     "--no-run",
-                    "--bin=mem",
-                    "--package=mem"
+                    "--bin=chip8_runtime",
+                    "--package=chip8_runtime"
                 ],
                 "filter": {
-                    "name": "mem",
+                    "name": "chip8_runtime",
                     "kind": "bin"
                 }
             },

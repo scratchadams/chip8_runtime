@@ -1,12 +1,18 @@
 pub mod proc {
+    use std::io::Error;
+    use std::collections::HashMap;
+    use std::fs;
+
+    use crate::shared_memory;
+    use crate::shared_memory::shared_memory::SharedMemory;
 
     pub struct Registers {
-        V: [u8; 16],
-        DT: u8,
-        ST: u8,
-        I: u16,
-        SP: u16,
-        PC: u16,
+        pub V: [u8; 16],
+        pub DT: u8,
+        pub ST: u8,
+        pub I: u16,
+        pub SP: u16,
+        pub PC: u16,
     }
 
     impl Default for Registers {
@@ -35,23 +41,47 @@ pub mod proc {
                 println!("V[{}] - {:x}", i, self.V[i]);
             }
         }
-
-        pub fn to_text(&self) -> String {
-            let mut reg_string = "".to_string();
-
-            for i in 0..self.V.len() {
-                write!(reg_string, "V[{}] - {:x}\n",i, self.V[i])
-                    .unwrap();
-            }
-
-            reg_string
-        }
-
     }
 
-    pub struct Proc {
-        proc_id: u32,
-        regs: Registers,
+    pub struct ProcessTable<'a> {
+        pub procs: HashMap<u32, &'a Proc<'a>>,
+    }
+
+    impl<'a> ProcessTable<'a> {
+        pub fn new() -> Result<ProcessTable<'a>, Error> {
+            Ok(ProcessTable {
+                procs: HashMap::new(),
+            })
+        }
+    }
+
+    pub struct Proc<'a> {
+        pub proc_id: u32,
+        pub regs: Registers,
+        pub mem: &'a mut [u8],
+    }
+
+    impl<'a> Proc<'a> {
+        pub fn new(mem: &'a mut SharedMemory) -> Result<Proc<'a>, Error> {
+            let vaddr = mem.mmap(1)?;
+            let mem_slice = mem.vaddr_to_pte(vaddr)?;
+
+            Ok(Proc {
+                proc_id: 0x41,
+                regs: Registers::default(),
+                mem: mem_slice,
+            })
+        }
+
+        pub fn load_program(&mut self, filename: String) -> Result<(), Error> {
+            let program_text = fs::read(filename)?;
+            if program_text.len() > shared_memory::shared_memory::PAGE_SIZE {
+                return Err(Error::new(std::io::ErrorKind::FileTooLarge, "File too large"));
+            }
+
+            self.mem[..program_text.len()].copy_from_slice(&program_text);
+            Ok(())
+        }
     }
 
 }
