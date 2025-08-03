@@ -49,7 +49,7 @@ pub mod chip8_engine {
         };
     }
 
-    pub fn opcode_0x0(mem: &mut SharedMemory, proc: &mut Proc, instruction: u16) {
+    pub fn opcode_0x0(proc: &mut Proc, instruction: u16) {
         let opt = extract_kk!(instruction);
 
         match opt {
@@ -65,23 +65,68 @@ pub mod chip8_engine {
         }
     }
 
-    pub fn opcode_0x1(mem: &mut SharedMemory, proc: &mut Proc, instruction: u16) {
+    pub fn opcode_0x1(proc: &mut Proc, instruction: u16) {
         proc.regs.PC = extract_nnn!(instruction);
     }
 
     //need to adjust to handle virtual addressing. maybe just keep a value in proc
     //struct to handle the pgd and pte indexes.
-    pub fn opcode_0x2(mem: &mut SharedMemory, proc: &mut Proc, instruction: u16) {
+    pub fn opcode_0x2(proc: &mut Proc, instruction: u16) {
         proc.regs.SP += 2;
 
-        mem.phys_mem[proc.regs.SP as usize] = ((proc.regs.PC + 2) >> 8) as u8;
-        mem.phys_mem[(proc.regs.SP + 1) as usize] = (proc.regs.PC + 2) as u8;
+        proc.mem[proc.regs.SP as usize] = ((proc.regs.PC + 2) >> 8) as u8;
+        proc.mem[(proc.regs.SP + 1) as usize] = (proc.regs.PC + 2) as u8;
 
         proc.regs.PC = extract_nnn!(instruction);
     }
 
-    pub fn opcode_0x3(mem: &mut SharedMemory, proc: &mut Proc, instruction: u16) {
-        todo!("opcode 0x3");
+    pub fn opcode_0x3(proc: &mut Proc, instruction: u16) {
+        let var_x = extract_x!(instruction);
+        let var_kk = extract_kk!(instruction);
+
+        if proc.regs.V[var_x as usize] == var_kk {
+            proc.regs.PC = proc.regs.PC + 0x4;
+        } else {
+            proc.regs.PC = proc.regs.PC + 0x2;
+        }
+    }
+
+    pub fn opcode_0x4(proc: &mut Proc, instruction: u16) {
+        let var_x = extract_x!(instruction);
+        let var_kk = extract_kk!(instruction);
+
+        if proc.regs.V[var_x as usize] != var_kk {
+            proc.regs.PC += 0x4;
+        } else {
+            proc.regs.PC += 0x2;
+        }
+    }
+
+    pub fn opcode_0x5(proc: &mut Proc, instruction: u16) {
+        let var_x = extract_x!(instruction);
+        let var_y = extract_y!(instruction);
+
+        if var_x == var_y {
+            proc.regs.PC += 0x4;
+        } else {
+            proc.regs.PC += 0x2;
+        }
+    }
+
+    pub fn opcode_0x6(proc: &mut Proc, instruction: u16) {
+        let var_x = extract_x!(instruction);
+        let var_kk = extract_kk!(instruction);
+
+        proc.regs.V[var_x as usize] = var_kk;
+        proc.regs.PC += 0x2;
+    }
+
+    pub fn opcode_0x7(proc: &mut Proc, instruction: u16) {
+        let var_x = extract_x!(instruction);
+        let var_kk = extract_kk!(instruction);
+
+        proc.regs.V[var_x as usize] = proc.regs.V[var_x as usize].wrapping_add(var_kk);
+        proc.regs.PC += 0x2;
     }
 
 

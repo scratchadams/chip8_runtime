@@ -22,7 +22,7 @@ fn main() {
     let mut proc = Proc::new(&mut mem).unwrap();
     proc_table.procs.insert(proc.proc_id, &proc);
 
-    let _ = proc.load_program("/root/machineid".to_string());
+    let _ = proc.load_program("/root/rust/chip8/5-quirks.ch8".to_string());
 
     proc.regs.reg_state();
     println!("{:X?}", proc.mem);

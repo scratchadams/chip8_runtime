@@ -6,6 +6,25 @@ pub mod proc {
     use crate::shared_memory;
     use crate::shared_memory::shared_memory::SharedMemory;
 
+    const chip8_sprites: [u8; 80] = [
+        0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
+        0x20, 0x60, 0x20, 0x20, 0x70, // 1
+        0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
+        0xF0, 0x10, 0xF0, 0x10, 0xF0, // 3
+        0x90, 0x90, 0xF0, 0x10, 0x10, // 4
+        0xF0, 0x80, 0xF0, 0x10, 0xF0, // 5
+        0xF0, 0x80, 0xF0, 0x90, 0xF0, // 6
+        0xF0, 0x10, 0x20, 0x40, 0x40, // 7
+        0xF0, 0x90, 0xF0, 0x90, 0xF0, // 8
+        0xF0, 0x90, 0xF0, 0x10, 0xF0, // 9
+        0xF0, 0x90, 0xF0, 0x90, 0x90, // A
+        0xE0, 0x90, 0xE0, 0x90, 0xE0, // B
+        0xF0, 0x80, 0x80, 0x80, 0xF0, // C
+        0xE0, 0x90, 0x90, 0x90, 0xE0, // D
+        0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
+        0xF0, 0x80, 0xF0, 0x80, 0x80  // F
+    ];
+
     pub struct Registers {
         pub V: [u8; 16],
         pub DT: u8,
@@ -75,11 +94,15 @@ pub mod proc {
 
         pub fn load_program(&mut self, filename: String) -> Result<(), Error> {
             let program_text = fs::read(filename)?;
-            if program_text.len() > shared_memory::shared_memory::PAGE_SIZE {
+            if program_text.len() > shared_memory::shared_memory::PAGE_SIZE - 0x200 {
                 return Err(Error::new(std::io::ErrorKind::FileTooLarge, "File too large"));
             }
 
-            self.mem[..program_text.len()].copy_from_slice(&program_text);
+            //copy sprites into process memory
+            self.mem[0x0..0x50].copy_from_slice(&chip8_sprites);
+
+            //copy program text into process memory
+            self.mem[0x200..(0x200 + program_text.len())].copy_from_slice(&program_text);
             Ok(())
         }
     }
