@@ -129,5 +129,111 @@ pub mod chip8_engine {
         proc.regs.PC += 0x2;
     }
 
+    pub fn opcode_0x8(proc: &mut Proc, instruction: u16) {
+        let var_z = extract_z!(instruction);
+        let var_x = extract_x!(instruction) as usize;
+        let var_y = extract_y!(instruction) as usize;
+
+        match var_z {
+            0x00 => {
+                proc.regs.V[var_x] = proc.regs.V[var_y];
+                proc.regs.PC += 2;
+            },
+            0x01 => {
+                proc.regs.V[var_x] = proc.regs.V[var_x] | proc.regs.V[var_y];
+                proc.regs.PC += 2;
+            },
+            0x02 => {
+                proc.regs.V[var_x] = proc.regs.V[var_x] & proc.regs.V[var_y];
+                proc.regs.PC += 2;
+            },
+            0x03 => {
+                proc.regs.V[var_x] = proc.regs.V[var_x] ^ proc.regs.V[var_y];
+                proc.regs.PC += 2;
+            },
+            0x04 => {
+                let v_x = proc.regs.V[var_x] as u16;
+                let v_y = proc.regs.V[var_y] as u16;
+
+                let temp = v_x.wrapping_add(v_y);
+                let temp2 = (proc.regs.V[var_x] as u32 + proc.regs.V[var_y] as u32) as u32;
+
+                proc.regs.V[var_x] = temp as u8;
+
+                if temp2 > 255 {
+                    proc.regs.V[0xF] = 1;
+                } else {
+                    proc.regs.V[0xF] = 0;
+                }
+
+                proc.regs.PC += 2;
+            },
+            0x05 => {
+                let v_x = proc.regs.V[var_x];
+                let v_y = proc.regs.V[var_y];
+
+                let temp = v_x.wrapping_sub(v_y);
+
+                proc.regs.V[var_x] = temp;
+
+                if v_x > v_y {
+                    proc.regs.V[0xF] = 1;
+                } else {
+                    proc.regs.V[0xF] = 0;
+                }
+
+                proc.regs.PC += 0x2;
+            },
+            0x06 => {
+                let v_x = proc.regs.V[var_x];
+                let v_y = proc.regs.V[var_y];
+
+                let temp = proc.regs.V[var_x] / 2;
+                proc.regs.V[var_x] = temp;
+
+                if (v_x & 1) == 1 {
+                    proc.regs.V[0xF] = 1;
+                } else {
+                    proc.regs.V[0xF] = 0;
+                }
+
+                proc.regs.PC += 0x2;
+            },
+            0x07 => {
+                let v_x = proc.regs.V[var_x];
+                let v_y = proc.regs.V[var_y];
+
+                let temp = proc.regs.V[var_y].wrapping_sub(proc.regs.V[var_x]);
+                proc.regs.V[var_x] = temp;
+
+                if v_y >= v_x {
+                    proc.regs.V[0xF] = 1;
+                } else {
+                    proc.regs.V[0xF] = 0;
+                }
+
+                proc.regs.PC += 0x2;
+            },
+            0x0E => {
+                let v_x = proc.regs.V[var_x];
+                let v_y = proc.regs.V[var_y];
+
+                let temp = proc.regs.V[var_x].wrapping_mul(2);
+                proc.regs.V[var_x] = temp;
+
+                if (v_x & 0x80) == 0x80 {
+                    proc.regs.V[0xF] = 1;
+                } else {
+                    proc.regs.V[0xF] = 0;
+                }
+
+                proc.regs.PC += 0x2;
+            },
+            _ => {
+                proc.regs.PC += 0x2;
+            },
+        }
+    }
+
 
 }
