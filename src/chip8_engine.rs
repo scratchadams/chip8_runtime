@@ -1,4 +1,5 @@
 pub mod chip8_engine {
+    use crate::display::display::DisplayWindow;
     use crate::shared_memory::shared_memory::SharedMemory;
     use crate::proc::proc::Proc;
     use rand::Rng;
@@ -268,17 +269,14 @@ pub mod chip8_engine {
         proc.regs.PC += 2;
     }
 
-    pub fn opcode_0xd(proc: &mut Proc, instruction: u16) {
+    pub fn opcode_0xd(proc: &mut Proc, display: &mut DisplayWindow, instruction: u16) {
+        let var_x = extract_x!(instruction) as u32;
+        let var_y = extract_y!(instruction) as u32;
+        let var_z = extract_z!(instruction) as usize;
+        
         proc.regs.PC += 2;
 
-        // ok here we should call draw_sprite or similar I *think*
-        // in that case we can move the logic out of the opcode hanlder
-        // and into a purpose-built display module function.
-        //
-        // looking at the function, I see we get x and y coords as well
-        // as a N value and we use the I register as an index.
-        // opcode logic should be responsible for extracting values to pass
-        // to sprite drawing function.
+        display.draw_sprite(proc, var_x, var_y, var_z);
     }
 
     pub fn opcode_0xe(proc: &mut Proc, instruction: u16) {
