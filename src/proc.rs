@@ -80,7 +80,6 @@ pub mod proc {
         pub regs: Registers,
         pub mem: &'a mut [u8],
         pub display: DisplayWindow,
-        pub current_key: u8,
     }
 
     impl<'a> Proc<'a> {
@@ -94,7 +93,6 @@ pub mod proc {
                 proc_id: 0x41,
                 regs: Registers::default(),
                 mem: mem_slice,
-                current_key: 0xFF,
                 display: display,
             })
         }

@@ -20,11 +20,12 @@ pub mod display {
     pub struct DisplayWindow {
         pub window: Window,
         pub buf: Vec<u32>,
+        pub key_state: u8,
     }
 
     impl DisplayWindow {
         pub fn new() -> Result<DisplayWindow, Error> {
-            let window = Window::new(
+            let mut window = Window::new(
                 "Chip8 Process", 
                 WIDTH as usize, 
                 HEIGHT as usize, 
@@ -32,10 +33,12 @@ pub mod display {
             ).unwrap();
 
             let buf: Vec<u32> = vec![0; (WIDTH * HEIGHT) as usize];
+            window.update_with_buffer(&buf, WIDTH as usize, HEIGHT as usize).unwrap();
             
             Ok(DisplayWindow {
                 window: window,
                 buf: buf,
+                key_state: 0xFF,
             })
         }
 

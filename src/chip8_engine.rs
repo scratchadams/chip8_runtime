@@ -285,14 +285,14 @@ pub mod chip8_engine {
 
         match var_kk {
             0x9e => {
-                if proc.regs.V[var_x] == proc.current_key {
+                if proc.regs.V[var_x] == proc.display.key_state {
                     proc.regs.PC += 4;
                 } else {
                     proc.regs.PC += 2;
                 }
             },
             0xa1 => {
-                if proc.regs.V[var_x] != proc.current_key {
+                if proc.regs.V[var_x] != proc.display.key_state {
                     proc.regs.PC += 4;
                 } else {
                     proc.regs.PC += 2;
@@ -315,8 +315,8 @@ pub mod chip8_engine {
                 proc.regs.PC += 2;
             },
             0x0a => {
-                proc.regs.V[var_x] = proc.current_key;
-                if proc.current_key != 0xFF {
+                proc.regs.V[var_x] = proc.display.key_state;
+                if proc.display.key_state != 0xFF {
                     proc.regs.PC += 2;
                 }
             },
