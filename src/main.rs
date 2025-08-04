@@ -2,6 +2,7 @@
 mod shared_memory;
 mod chip8_engine;
 mod proc;
+mod display;
 
 use shared_memory::shared_memory::SharedMemory;
 use proc::proc::Proc;

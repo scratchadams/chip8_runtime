@@ -5,6 +5,7 @@ pub mod proc {
 
     use crate::shared_memory;
     use crate::shared_memory::shared_memory::SharedMemory;
+    use crate::display::display::DisplayWindow;
 
     const chip8_sprites: [u8; 80] = [
         0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
@@ -78,6 +79,7 @@ pub mod proc {
         pub proc_id: u32,
         pub regs: Registers,
         pub mem: &'a mut [u8],
+        pub display: DisplayWindow,
         pub current_key: u8,
     }
 
@@ -86,11 +88,14 @@ pub mod proc {
             let vaddr = mem.mmap(1)?;
             let mem_slice = mem.vaddr_to_pte(vaddr)?;
 
+            let display = DisplayWindow::new().unwrap();
+
             Ok(Proc {
                 proc_id: 0x41,
                 regs: Registers::default(),
                 mem: mem_slice,
                 current_key: 0xFF,
+                display: display,
             })
         }
 

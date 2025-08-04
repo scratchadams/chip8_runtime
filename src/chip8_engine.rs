@@ -269,7 +269,16 @@ pub mod chip8_engine {
     }
 
     pub fn opcode_0xd(proc: &mut Proc, instruction: u16) {
-        todo!("implement display functionality");
+        proc.regs.PC += 2;
+
+        // ok here we should call draw_sprite or similar I *think*
+        // in that case we can move the logic out of the opcode hanlder
+        // and into a purpose-built display module function.
+        //
+        // looking at the function, I see we get x and y coords as well
+        // as a N value and we use the I register as an index.
+        // opcode logic should be responsible for extracting values to pass
+        // to sprite drawing function.
     }
 
     pub fn opcode_0xe(proc: &mut Proc, instruction: u16) {
