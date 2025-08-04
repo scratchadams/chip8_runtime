@@ -1,6 +1,7 @@
 pub mod chip8_engine {
     use crate::shared_memory::shared_memory::SharedMemory;
     use crate::proc::proc::Proc;
+    use rand::Rng;
     /// To handle the chip8 instruction set, we will define a handler
     /// function for each first nibble (i.e - 0x0, 0x1, 0x2, etc...)
     /// any nibble which has multiple instructions associated with it
@@ -216,7 +217,7 @@ pub mod chip8_engine {
             },
             0x0E => {
                 let v_x = proc.regs.V[var_x];
-                let v_y = proc.regs.V[var_y];
+                //let v_y = proc.regs.V[var_y];
 
                 let temp = proc.regs.V[var_x].wrapping_mul(2);
                 proc.regs.V[var_x] = temp;
@@ -235,5 +236,38 @@ pub mod chip8_engine {
         }
     }
 
+    pub fn opcode_0x9(proc: &mut Proc, instruction: u16) {
+        let var_x = extract_x!(instruction) as usize;
+        let var_y = extract_y!(instruction) as usize;
 
+        if proc.regs.V[var_x] != proc.regs.V[var_y] {
+            proc.regs.PC += 4;
+        } else {
+            proc.regs.PC += 2;
+        }
+    }
+
+    pub fn opcode_0xa(proc: &mut Proc, instruction: u16) {
+        proc.regs.I = extract_nnn!(instruction);
+
+        proc.regs.PC += 2;
+    }
+
+    pub fn opcode_0xb(proc: &mut Proc, instruction: u16) {
+        proc.regs.PC = extract_nnn!(instruction) + (proc.regs.V[0] as u16);
+    }
+
+    pub fn opcode_0xc(proc: &mut Proc, instruction: u16) {
+        let mut rng = rand::thread_rng();
+        let rnd: u8 = rng.gen();
+        let var_x = extract_x!(instruction) as usize;
+        let var_kk = extract_kk!(instruction);
+
+        proc.regs.V[var_x] = rnd & var_kk;
+        proc.regs.PC += 2;
+    }
+
+    pub fn opcode_0xd(proc: &mut Proc, instruction: u16) {
+
+    }
 }
