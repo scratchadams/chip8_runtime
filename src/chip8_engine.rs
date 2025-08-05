@@ -268,10 +268,13 @@ pub mod chip8_engine {
         let var_x = extract_x!(instruction) as u32;
         let var_y = extract_y!(instruction) as u32;
         let var_z = extract_z!(instruction) as usize;
+
+        let x = proc.regs.V[var_x as usize] as u32;
+        let y = proc.regs.V[var_y as usize] as u32;
         
         proc.regs.PC += 2;
 
-        proc.display.draw_sprite(&mut proc.regs, proc.mem, var_x, var_y, var_z);
+        proc.display.draw_sprite(&mut proc.regs, proc.mem, x, y, var_z);
     }
 
     pub fn opcode_0xe(proc: &mut Proc, instruction: u16) {

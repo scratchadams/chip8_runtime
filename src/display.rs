@@ -6,8 +6,12 @@ pub mod display {
     const WHITE: u32 = 0xFFFFFF;
     const BLACK: u32 = 0x000000;
 
-    const WIDTH: u32 = 800;
-    const HEIGHT: u32 = 600;
+    const LOGICAL_WIDTH: usize = 64;
+    const LOGICAL_HEIGHT: usize = 32;
+    const SCALE: usize = 10;
+
+    const WIDTH: u32 = (LOGICAL_WIDTH * SCALE) as u32;
+    const HEIGHT: u32 =(LOGICAL_HEIGHT * SCALE) as u32;
 
     fn get_bit(byte: u8, pos: u8) -> u8 {
         if(pos == 8) {
@@ -64,19 +68,32 @@ pub mod display {
                 let byte = mem[index + byte_index];
 
                 for bit_index in 0..8 {
-                    let x = (x_pos + bit_index) % WIDTH as u32;
-                    let y = (y_pos + byte_index as u32) % HEIGHT as u32;
-                    let pos = (y * WIDTH as u32 + x) as usize;
+                    let x = (x_pos + bit_index) % LOGICAL_WIDTH as u32;
+                    let y = (y_pos + byte_index as u32) % LOGICAL_HEIGHT as u32;
 
                     let sprite_pixel = (byte >> (7 - bit_index)) & 1;
-                    let current_pixel = if self.buf[pos] == WHITE { 1 } else { 0 };
-                    let new_pixel = current_pixel ^ sprite_pixel;
 
-                    if current_pixel == 1 && new_pixel == 0 {
-                        regs.V[0xF] = 1;
+                    for dy in 0..SCALE {
+                        for dx in 0..SCALE {
+                            let scaled_x = (x as usize * SCALE) + dx;
+                            let scaled_y = (y as usize * SCALE) + dy;
+                            let pos = scaled_y * WIDTH as usize + scaled_x;
+
+                            let current_pixel = if self.buf[pos] == WHITE { 1 } else { 0 };
+                            let new_pixel = current_pixel ^ sprite_pixel;
+
+                            if current_pixel == 1 && new_pixel == 0 {
+                                regs.V[0xF] = 1;
+                            }
+
+                            self.buf[pos] = if new_pixel == 1 { WHITE } else { BLACK };
+
+                            /*self
+                                .window
+                                .update_with_buffer(&self.buf, WIDTH as usize, HEIGHT as usize)
+                                .unwrap();*/
+                        }
                     }
-
-                    self.buf[pos] = if new_pixel == 1 { WHITE } else { BLACK };
                 }
             }
             self
