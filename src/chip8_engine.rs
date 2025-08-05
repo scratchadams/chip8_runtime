@@ -1,6 +1,5 @@
 pub mod chip8_engine {
     use crate::display::display::DisplayWindow;
-    use crate::shared_memory::shared_memory::SharedMemory;
     use crate::proc::proc::Proc;
     use rand::Rng;
     /// To handle the chip8 instruction set, we will define a handler
@@ -15,12 +14,6 @@ pub mod chip8_engine {
     /// while additional variables will be extracted based on the needs of 
     /// each instruction handler.
     
-    macro_rules! extract_opcode {
-        ($value:expr) => {
-            $value = ($value >> 0xc) as u8
-        };
-    }
-
     macro_rules! extract_nnn {
         ($value:expr) => {
             ($value & 0x0FFF) as u16
@@ -56,13 +49,15 @@ pub mod chip8_engine {
 
         match opt {
             0xe0 => {
-                todo!("clear screen");
+                proc.display.clear_screen();
+                proc.regs.PC += 2;
             },
             0xee => {
-                todo!("return");
+                proc.regs.PC = ((proc.mem[proc.regs.SP as usize] as u16) << 8) | (proc.mem[(proc.regs.SP+1) as usize] as u16);
+                proc.regs.SP -= 2;
             },
             _ => {
-                todo!("do nothing, but incremement stack pointer");
+                proc.regs.PC += 2;
             }
         }
     }
@@ -269,14 +264,14 @@ pub mod chip8_engine {
         proc.regs.PC += 2;
     }
 
-    pub fn opcode_0xd(proc: &mut Proc, display: &mut DisplayWindow, instruction: u16) {
+    pub fn opcode_0xd(proc: &mut Proc, instruction: u16) {
         let var_x = extract_x!(instruction) as u32;
         let var_y = extract_y!(instruction) as u32;
         let var_z = extract_z!(instruction) as usize;
         
         proc.regs.PC += 2;
 
-        display.draw_sprite(proc, var_x, var_y, var_z);
+        proc.display.draw_sprite(&mut proc.regs, proc.mem, var_x, var_y, var_z);
     }
 
     pub fn opcode_0xe(proc: &mut Proc, instruction: u16) {

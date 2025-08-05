@@ -1,7 +1,7 @@
 pub mod display {
     use minifb::{Window, WindowOptions, Key};
     use std::io::{Error, ErrorKind};
-    use crate::proc::proc::Proc;
+    use crate::proc::proc::{Proc, Registers};
 
     const WHITE: u32 = 0xFFFFFF;
     const BLACK: u32 = 0x000000;
@@ -42,6 +42,12 @@ pub mod display {
             })
         }
 
+        pub fn clear_screen(&mut self) {
+            self.buf
+                .iter_mut()
+                .for_each(|x| *x = 0);
+        }
+
         pub fn draw_pixel(&mut self, x_pos: u32, y_pos: u32) {
             let x = x_pos % WIDTH;
             let y = y_pos % HEIGHT;
@@ -50,12 +56,12 @@ pub mod display {
             self.buf[pos] = WHITE;
         }
 
-        pub fn draw_sprite(&mut self, proc: &mut Proc, x_pos: u32, y_pos: u32, var_z: usize) {
-            let index = proc.regs.I as usize;
-            proc.regs.V[0xF] = 0;
+        pub fn draw_sprite(&mut self, regs: &mut Registers, mem: &mut [u8], x_pos: u32, y_pos: u32, var_z: usize) {
+            let index = regs.I as usize;
+            regs.V[0xF] = 0;
 
             for byte_index in 0..var_z {
-                let byte = proc.mem[index + byte_index];
+                let byte = mem[index + byte_index];
 
                 for bit_index in 0..8 {
                     let x = (x_pos + bit_index) % WIDTH as u32;
@@ -67,7 +73,7 @@ pub mod display {
                     let new_pixel = current_pixel ^ sprite_pixel;
 
                     if current_pixel == 1 && new_pixel == 0 {
-                        proc.regs.V[0xF] = 1;
+                        regs.V[0xF] = 1;
                     }
 
                     self.buf[pos] = if new_pixel == 1 { WHITE } else { BLACK };
