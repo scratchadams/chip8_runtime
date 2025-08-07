@@ -2,6 +2,7 @@ pub mod chip8_engine {
     use crate::display::display::DisplayWindow;
     use crate::proc::proc::Proc;
     use rand::Rng;
+    use std::mem;
     /// To handle the chip8 instruction set, we will define a handler
     /// function for each first nibble (i.e - 0x0, 0x1, 0x2, etc...)
     /// any nibble which has multiple instructions associated with it
@@ -53,7 +54,24 @@ pub mod chip8_engine {
                 proc.regs.PC += 2;
             },
             0xee => {
-                proc.regs.PC = ((proc.mem[proc.regs.SP as usize] as u16) << 8) | (proc.mem[(proc.regs.SP+1) as usize] as u16);
+                let addr1 = (proc.regs.SP as usize) + proc.base_addr as usize;
+                let addr2 = ((proc.regs.SP + 1) as usize) + proc.base_addr as usize;
+
+                let val1 = proc.mem
+                    .lock()
+                    .unwrap()
+                    .read(addr1, mem::size_of::<u16>())
+                    .unwrap()[0] as u16;
+                let val1 = val1 << 8;
+
+                let val2 = proc.mem
+                    .lock()
+                    .unwrap()
+                    .read(addr2, mem::size_of::<u16>())
+                    .unwrap()[0] as u16;
+
+                proc.regs.PC = val1 | val2;
+                //proc.regs.PC = ((proc.mem[proc.regs.SP as usize] as u16) << 8) | (proc.mem[(proc.regs.SP+1) as usize] as u16);
                 proc.regs.SP -= 2;
             },
             _ => {
@@ -71,8 +89,26 @@ pub mod chip8_engine {
     pub fn opcode_0x2(proc: &mut Proc, instruction: u16) {
         proc.regs.SP += 2;
 
-        proc.mem[proc.regs.SP as usize] = ((proc.regs.PC + 2) >> 8) as u8;
-        proc.mem[(proc.regs.SP + 1) as usize] = (proc.regs.PC + 2) as u8;
+        let addr1 = (proc.regs.SP as usize + proc.base_addr as usize) as usize;
+        let addr2 = ((proc.regs.SP + 1) as usize) + proc.base_addr as usize;
+
+        let mut data: Vec<u8> = Vec::new();
+        data.push(((proc.regs.PC + 2) >> 8) as u8);
+        data.push((proc.regs.PC + 2) as u8);
+        
+        let _ = proc.mem
+            .lock()
+            .unwrap()
+            .write(addr1, &data, mem::size_of::<u8>());
+
+        let _ = proc.mem
+            .lock()
+            .unwrap()
+            .write(addr2, &data, mem::size_of::<u8>());
+
+
+        //proc.mem[proc.regs.SP as usize] = ((proc.regs.PC + 2) >> 8) as u8;
+        //proc.mem[(proc.regs.SP + 1) as usize] = (proc.regs.PC + 2) as u8;
 
         proc.regs.PC = extract_nnn!(instruction);
     }
@@ -273,8 +309,12 @@ pub mod chip8_engine {
         let y = proc.regs.V[var_y as usize] as u32;
         
         proc.regs.PC += 2;
+        let mem = &proc.mem
+            .lock()
+            .unwrap()
+            .phys_mem[proc.base_addr as usize..(proc.base_addr+0x1000) as usize];
 
-        proc.display.draw_sprite(&mut proc.regs, proc.mem, x, y, var_z);
+        proc.display.draw_sprite(&mut proc.regs, &mem, x, y, var_z);
     }
 
     pub fn opcode_0xe(proc: &mut Proc, instruction: u16) {
@@ -331,29 +371,83 @@ pub mod chip8_engine {
                 proc.regs.PC += 2;
             },
             0x29 => {
-                proc.regs.I = proc.mem[var_x * 5] as u16;
+                let addr = proc.base_addr as usize + (var_x * 5);
+                let val = proc.mem
+                    .lock()
+                    .unwrap()
+                    .read(addr, mem::size_of::<u16>())
+                    .unwrap()[0] as u16;
+
+                
+                //proc.regs.I = proc.mem[var_x * 5] as u16;
+                proc.regs.I = val;
                 proc.regs.PC += 2;
             },
             0x33 => {
                 let mut dec: u8 = proc.regs.V[var_x];
                 
-                proc.mem[(proc.regs.I + 2) as usize] = dec % 10;
-                dec = dec / 10;
+                let addr = (proc.regs.I + 2) as usize;
+                let mut data: Vec<u8> = Vec::new();
+                data.push(dec % 10);
+                let _ = proc.mem
+                    .lock()
+                    .unwrap()
+                    .write(addr, &data, mem::size_of::<u8>());
 
-                proc.mem[(proc.regs.I + 1) as usize] = dec % 10;
                 dec = dec / 10;
+                let addr = (proc.regs.I + 1) as usize;
+                data[0] = dec % 10;
+                let _ = proc.mem
+                    .lock()
+                    .unwrap()
+                    .write(addr, &data, mem::size_of::<u8>());
 
-                proc.mem[proc.regs.I as usize] = dec % 10;                
+
+                dec = dec / 10;
+                let addr = proc.regs.I as usize;
+                data[0] = dec % 10;
+                let _ = proc.mem
+                    .lock()
+                    .unwrap()
+                    .write(addr, &data, mem::size_of::<u8>());
+
+                //proc.mem[(proc.regs.I + 2) as usize] = dec % 10;
+                //dec = dec / 10;
+
+                //proc.mem[(proc.regs.I + 1) as usize] = dec % 10;
+                //dec = dec / 10;
+
+                //proc.mem[proc.regs.I as usize] = dec % 10;                
             },
             0x55 => {
                 for i in 0..=var_x {
-                    proc.mem[(proc.regs.I + (i as u16)) as usize] = proc.regs.V[i as usize];
+                    let addr = (proc.regs.I + (i as u16)) as usize;
+                    
+                    let mut data: Vec<u8> = Vec::new(); 
+                    data.push(proc.regs.V[i as usize]);
+                    
+                    let _ = proc.mem
+                        .lock()
+                        .unwrap()
+                        .write(addr, &data, mem::size_of::<u8>());
+
+                    //proc.mem[(proc.regs.I + (i as u16)) as usize] = proc.regs.V[i as usize];
                 }
                 proc.regs.PC += 2;
             },
             0x65 => {
                 for i in 0..=var_x {
-                    proc.regs.V[i as usize] = proc.mem[(proc.regs.I + (i as u16)) as usize];
+                    let addr = (proc.regs.I + (i as u16)) as usize;
+                    
+                    let data = proc.mem
+                        .lock()
+                        .unwrap()
+                        .read(addr, size_of::<u8>())
+                        .unwrap()[0] as u8;
+
+                    proc.regs.V[i as usize] = data;
+
+                    //proc.regs.V[i as usize] = proc.mem[(proc.regs.I + (i as u16)) as usize];
                 }
                 proc.regs.PC += 2;
             },

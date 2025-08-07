@@ -21,6 +21,7 @@ pub mod display {
        return ((byte >> (8-pos)) & 0x1) as u8;
     }
 
+
     pub struct DisplayWindow {
         pub window: Window,
         pub buf: Vec<u32>,
@@ -60,7 +61,7 @@ pub mod display {
             self.buf[pos] = WHITE;
         }
 
-        pub fn draw_sprite(&mut self, regs: &mut Registers, mem: &mut [u8], x_pos: u32, y_pos: u32, var_z: usize) {
+        pub fn draw_sprite(&mut self, regs: &mut Registers, mem: &[u8], x_pos: u32, y_pos: u32, var_z: usize) {
             let index = regs.I as usize;
             regs.V[0xF] = 0;
 

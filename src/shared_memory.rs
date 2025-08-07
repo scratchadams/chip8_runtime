@@ -1,6 +1,7 @@
 pub mod shared_memory {
     use std::io::{Error, ErrorKind};
     use std::fs;
+    use std::sync::{Arc, Mutex};
 
     pub const PAGE_SIZE: usize = 0x1000;
     const PHYS_MEM_SIZE: usize = 0x100000;
@@ -115,7 +116,7 @@ pub mod shared_memory {
         }
         /// vaddr_to_pte should take a vaddr and return a mutable slice
         /// reference to the memory associated with it
-        pub fn vaddr_to_pte(&mut self, addr: u32) -> Result<&mut [u8], Error> {
+        pub fn vaddr_to_pte(&mut self, addr: u32) -> Result<usize, Error> {
             let pgd_idx = (addr >> 16) as usize;
             let pte_idx = ((addr >> 12) & 0x0F) as usize;
 
@@ -138,7 +139,8 @@ pub mod shared_memory {
                 return Err(Error::new(ErrorKind::Other, "write exceeds physical memory"));
             }
 
-            Ok(self.phys_mem[phy_addr..end].as_mut())
+            Ok(phy_addr)
+            //Ok(self.phys_mem[phy_addr..end].as_mut())
 
         }
 
@@ -157,8 +159,8 @@ pub mod shared_memory {
         /// the length of the write (how many bytes were written to memory)
         /// or an error value.
         /// 
-        pub fn write(&mut self, addr: u32, data: Vec<u8>) -> Result<(), Error> {
-            let pgd_idx = (addr >> 16) as usize;
+        pub fn write(&mut self, addr: usize, data: & Vec<u8>, len: usize) -> Result<(), Error> {
+            /*let pgd_idx = (addr >> 16) as usize;
             let pte_idx = ((addr >> 12) & 0x0F) as usize;
 
             let pte = self
@@ -178,17 +180,24 @@ pub mod shared_memory {
 
             if end > self.phys_mem.len() {
                 return Err(Error::new(ErrorKind::Other, "write exceeds physical memory"));
+            }*/
+            if data.len() > 0x1000 {
+                return Err(Error::new(ErrorKind::Other, "write size must not exceed 0x1000 bytes"));
             }
 
-            self.phys_mem[phy_addr..end].copy_from_slice(&data);
+            let end = addr
+                .checked_add(data.len())
+                .ok_or_else(|| Error::new(ErrorKind::Other, "overflow computing write range"))? as usize;
 
-            println!("Wrote {:X?} to physical address range [{:#X}..{:#X})", data, phy_addr, end);
+            self.phys_mem[addr..end].copy_from_slice(&data);
+
+            println!("Wrote {:X?} to physical address range [{:#X}..{:#X})", data, addr, end);
 
             Ok(())
         }
 
-        pub fn read(&mut self, addr: u32, data: &mut Vec<u8>, len: usize) -> Result<(), Error> {
-            let pgd_idx = (addr >> 16) as usize;
+        pub fn read(&mut self, addr: usize, len: usize) -> Result<Vec<u8>, Error> {
+            /*let pgd_idx = (addr >> 16) as usize;
             let pte_idx = ((addr >> 12) & 0x0F) as usize;
 
             let pte = self
@@ -208,17 +217,19 @@ pub mod shared_memory {
 
             if end > self.phys_mem.len() {
                 return Err(Error::new(ErrorKind::Other, "write exceeds physical memory"));
-            }
+            }*/
+            let mut data:Vec<u8> = Vec::new();
+            let end = addr + len as usize;
 
-            data.extend_from_slice(&self.phys_mem[phy_addr..end]);
+            data.extend_from_slice(&self.phys_mem[addr..end]);
 
-            Ok(())
+            Ok(data)
         }
 
         pub fn load_program(&mut self, addr: u32, filename: String) -> Result<(), Error> {
             let program_text = fs::read(filename)?;
             
-            let _ = self.write(addr, program_text)?;
+            let _ = self.write(addr as usize, &program_text, program_text.len())?;
 
             Ok(())
         }

@@ -2,6 +2,7 @@ pub mod proc {
     use std::io::Error;
     use std::collections::HashMap;
     use std::fs;
+    use std::sync::{Arc, Mutex};
 
     use crate::chip8_engine::chip8_engine::*;
     use crate::shared_memory;
@@ -32,6 +33,7 @@ pub mod proc {
         0xF0, 0x80, 0xF0, 0x80, 0xF0, // E
         0xF0, 0x80, 0xF0, 0x80, 0x80  // F
     ];
+
 
     pub struct Registers {
         pub V: [u8; 16],
@@ -71,7 +73,7 @@ pub mod proc {
     }
 
     pub struct ProcessTable<'a> {
-        pub procs: HashMap<u32, &'a Proc<'a>>,
+        pub procs: HashMap<u32, Proc<'a>>,
     }
 
     impl<'a> ProcessTable<'a> {
@@ -85,22 +87,29 @@ pub mod proc {
     pub struct Proc<'a> {
         pub proc_id: u32,
         pub regs: Registers,
-        pub mem: &'a mut [u8],
+        pub mem: &'a mut Arc<Mutex<SharedMemory>>,
         pub display: DisplayWindow,
+        pub base_addr: u32,
     }
 
     impl<'a> Proc<'a> {
-        pub fn new(mem: &'a mut SharedMemory) -> Result<Proc<'a>, Error> {
-            let vaddr = mem.mmap(1)?;
-            let mem_slice = mem.vaddr_to_pte(vaddr)?;
+        pub fn new(mem: &'a mut Arc<Mutex<SharedMemory>>) -> Result<Proc<'a>, Error> {
+            let vaddr = mem.lock()
+                .unwrap()
+                .mmap(1)?;
+
+            let mem_slice = mem.lock()
+                .unwrap()
+                .vaddr_to_pte(vaddr)?;
 
             let display = DisplayWindow::new().unwrap();
 
             Ok(Proc {
                 proc_id: 0x41,
                 regs: Registers::default(),
-                mem: mem_slice,
+                mem: mem,
                 display: display,
+                base_addr: vaddr,
             })
         }
 
@@ -111,17 +120,46 @@ pub mod proc {
             }
 
             //copy sprites into process memory
-            self.mem[0x0..0x50].copy_from_slice(&chip8_sprites);
+            //self.mem[0x0..0x50].copy_from_slice(&chip8_sprites);
+            let sprite_vec = chip8_sprites.to_vec();
+            let _ = self.mem.lock()
+                .unwrap()
+                .write(0x0, &sprite_vec, sprite_vec.len());
 
             //copy program text into process memory
-            self.mem[0x200..(0x200 + program_text.len())].copy_from_slice(&program_text);
+            //self.mem.lock().unwrap()[0x200..(0x200 + program_text.len())].copy_from_slice(&program_text);
+            let _ = self.mem.lock()
+                .unwrap()
+                .write(0x200, &program_text, program_text.len());
+
             Ok(())
         }
 
         pub fn run_program(&mut self) {
             loop {
                 let pc = self.regs.PC as usize;
-                let mut instruction = ((self.mem[pc] as u16) << 8) | self.mem[pc+1] as u16;
+                
+                let addr1 = self.base_addr as usize + pc;
+                let addr2 = self.base_addr as usize + (pc + 1);
+                
+                let val1 = self.mem
+                    .lock()
+                    .unwrap()
+                    .read(addr1, size_of::<u8>())
+                    .unwrap()[0];
+                let val1 = (val1 as u16) << 8;
+
+                let val2 = self.mem
+                    .lock()
+                    .unwrap()
+                    .read(addr2, size_of::<u8>())
+                    .unwrap()[0];
+                let val2 = val2 as u16;
+
+                let instruction = val1 | val2;
+
+                //let instruction = ((self.mem.lock().unwrap().phys_mem[pc] as u16) << 8) | self.mem.lock().unwrap().phys_mem[pc+1] as u16;
+                
                 let opcode = extract_opcode!(instruction);
 
                 match opcode {
