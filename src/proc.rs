@@ -121,16 +121,18 @@ pub mod proc {
 
             //copy sprites into process memory
             //self.mem[0x0..0x50].copy_from_slice(&chip8_sprites);
+            let sprite_addr = self.base_addr as usize + 0x0;
             let sprite_vec = chip8_sprites.to_vec();
             let _ = self.mem.lock()
                 .unwrap()
-                .write(0x0, &sprite_vec, sprite_vec.len());
+                .write(sprite_addr, &sprite_vec, sprite_vec.len());
 
             //copy program text into process memory
             //self.mem.lock().unwrap()[0x200..(0x200 + program_text.len())].copy_from_slice(&program_text);
+            let prog_addr = self.base_addr as usize + 0x200;
             let _ = self.mem.lock()
                 .unwrap()
-                .write(0x200, &program_text, program_text.len());
+                .write(prog_addr, &program_text, program_text.len());
 
             Ok(())
         }
