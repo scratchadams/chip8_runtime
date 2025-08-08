@@ -71,7 +71,6 @@ pub mod chip8_engine {
                     .unwrap()[0] as u16;
 
                 proc.regs.PC = val1 | val2;
-                //proc.regs.PC = ((proc.mem[proc.regs.SP as usize] as u16) << 8) | (proc.mem[(proc.regs.SP+1) as usize] as u16);
                 proc.regs.SP -= 2;
             },
             _ => {
@@ -105,10 +104,6 @@ pub mod chip8_engine {
             .lock()
             .unwrap()
             .write(addr2, &data, mem::size_of::<u8>());
-
-
-        //proc.mem[proc.regs.SP as usize] = ((proc.regs.PC + 2) >> 8) as u8;
-        //proc.mem[(proc.regs.SP + 1) as usize] = (proc.regs.PC + 2) as u8;
 
         proc.regs.PC = extract_nnn!(instruction);
     }

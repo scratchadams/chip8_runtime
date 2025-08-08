@@ -1,7 +1,5 @@
 pub mod shared_memory {
     use std::io::{Error, ErrorKind};
-    use std::fs;
-    use std::sync::{Arc, Mutex};
 
     pub const PAGE_SIZE: usize = 0x1000;
     const PHYS_MEM_SIZE: usize = 0x100000;
@@ -12,17 +10,6 @@ pub mod shared_memory {
         };
     }
 
-    macro_rules! clear_bit  {
-        ($value:expr, $bit:expr) => {
-            $value &= !(1 << $bit);
-        };
-    }
-
-    macro_rules! toggle_bit {
-        ($value:expr, $bit:expr) => {
-            $value ^= 1 << $bit;
-        };
-    }
 
     macro_rules! is_bit_set {
         ($value:expr, $bit:expr) => {
@@ -160,27 +147,6 @@ pub mod shared_memory {
         /// or an error value.
         /// 
         pub fn write(&mut self, addr: usize, data: & Vec<u8>, len: usize) -> Result<(), Error> {
-            /*let pgd_idx = (addr >> 16) as usize;
-            let pte_idx = ((addr >> 12) & 0x0F) as usize;
-
-            let pte = self
-                .page_table_entries
-                .get(pgd_idx)
-                .ok_or_else(|| Error::new(ErrorKind::Other, "PGD index out of bounds"))?;
-
-            let phys_page = pte
-                .get(pte_idx)
-                .ok_or_else(|| Error::new(ErrorKind::Other, "PTE index out of bounds"))?;
-
-            let phy_addr = *phys_page as usize;
-
-            let end = phy_addr
-                .checked_add(data.len())
-                .ok_or_else(|| Error::new(ErrorKind::Other, "overflow computing write range"))?;
-
-            if end > self.phys_mem.len() {
-                return Err(Error::new(ErrorKind::Other, "write exceeds physical memory"));
-            }*/
             if data.len() > 0x1000 {
                 return Err(Error::new(ErrorKind::Other, "write size must not exceed 0x1000 bytes"));
             }
@@ -191,33 +157,12 @@ pub mod shared_memory {
 
             self.phys_mem[addr..end].copy_from_slice(&data);
 
-            println!("Wrote {:X?} to physical address range [{:#X}..{:#X})", data, addr, end);
+            //println!("Wrote {:X?} to physical address range [{:#X}..{:#X})", data, addr, end);
 
             Ok(())
         }
 
         pub fn read(&mut self, addr: usize, len: usize) -> Result<Vec<u8>, Error> {
-            /*let pgd_idx = (addr >> 16) as usize;
-            let pte_idx = ((addr >> 12) & 0x0F) as usize;
-
-            let pte = self
-                .page_table_entries
-                .get(pgd_idx)
-                .ok_or_else(|| Error::new(ErrorKind::Other, "PGD index out of bounds"))?;
-
-            let phys_page = pte
-                .get(pte_idx)
-                .ok_or_else(|| Error::new(ErrorKind::Other, "PTE index out of bounds"))?;
-
-            let phy_addr = *phys_page as usize;
-
-            let end = phy_addr
-                .checked_add(len)
-                .ok_or_else(|| Error::new(ErrorKind::Other, "overflow computing write range"))?;
-
-            if end > self.phys_mem.len() {
-                return Err(Error::new(ErrorKind::Other, "write exceeds physical memory"));
-            }*/
             let mut data:Vec<u8> = Vec::new();
             let end = addr + len as usize;
 
@@ -225,15 +170,5 @@ pub mod shared_memory {
 
             Ok(data)
         }
-
-        pub fn load_program(&mut self, addr: u32, filename: String) -> Result<(), Error> {
-            let program_text = fs::read(filename)?;
-            
-            let _ = self.write(addr as usize, &program_text, program_text.len())?;
-
-            Ok(())
-        }
-
-
     }
 }
