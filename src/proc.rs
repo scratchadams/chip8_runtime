@@ -93,14 +93,17 @@ pub mod proc {
     }
 
     impl<'a> Proc<'a> {
+        /// This process will return a new Proc (process) object
+        /// A page of memory is mmaped to provide the virtual mapping
+        /// this process will use.
+        /// 
+        /// A new display window is created per-process and associated
+        /// with the Proc object
         pub fn new(mem: &'a mut Arc<Mutex<SharedMemory>>) -> Result<Proc<'a>, Error> {
             let vaddr = mem.lock()
                 .unwrap()
                 .mmap(1)?;
 
-            let mem_slice = mem.lock()
-                .unwrap()
-                .vaddr_to_pte(vaddr)?;
 
             let display = DisplayWindow::new().unwrap();
 
@@ -113,6 +116,9 @@ pub mod proc {
             })
         }
 
+        /// This function loads chip8 program text from a file
+        /// and loads it into the process' memory space
+        /// 
         pub fn load_program(&mut self, filename: String) -> Result<(), Error> {
             let program_text = fs::read(filename)?;
             if program_text.len() > shared_memory::shared_memory::PAGE_SIZE - 0x200 {
@@ -137,6 +143,14 @@ pub mod proc {
             Ok(())
         }
 
+        /// This method is responsible for running the loaded ch8 program.
+        /// It starts a loop that initially sets the program counter, grabs
+        /// values relevant to the offset of the PC from the program's memory 
+        /// space to create an instruction.
+        /// 
+        /// The initial opcode is extracted from the instruction and used to call
+        /// the various opcode handlers. The instruction value and Proc object are 
+        /// passed to the matched handler to execute the instruction. 
         pub fn run_program(&mut self) {
             loop {
                 let pc = self.regs.PC as usize;

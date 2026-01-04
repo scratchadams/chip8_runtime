@@ -9,11 +9,16 @@ use proc::proc::{Proc, ProcessTable};
 use std::sync::{Arc, Mutex};
 use std::thread;
 fn main() {
+    //Allocate system memory
     let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
-    let read_test: Vec<u8> = Vec::new();
 
+    //Not sure what this test was for, will keep for now
+    let read_test: Vec<u8> = Vec::new();
     println!("{:X?}", read_test);
 
+    //mem1 is an Arc clone of mem, which I believe is used as a reference
+    //to system memory. That way we pass the Arc clone to our new process
+    //so it can safely use that memory TODO: re-read the Arc docs and tutorial.
     let mut mem1 = Arc::clone(&mem);
     let handle1 = thread::spawn(move || {
         let mut proc = Proc::new(&mut mem1).unwrap();
