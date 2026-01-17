@@ -244,7 +244,6 @@ pub mod chip8_engine {
             },
             0x0E => {
                 let v_x = proc.regs.V[var_x];
-                //let v_y = proc.regs.V[var_y];
 
                 let temp = proc.regs.V[var_x].wrapping_mul(2);
                 proc.regs.V[var_x] = temp;
@@ -375,7 +374,8 @@ pub mod chip8_engine {
             0x33 => {
                 let mut dec: u8 = proc.regs.V[var_x];
                 
-                let addr = (proc.regs.I + 2) as usize;
+                let base = proc.base_addr as usize + proc.regs.I as usize;
+                let addr = base + 2;
                 let mut data: Vec<u8> = Vec::new();
                 data.push(dec % 10);
                 let _ = proc.mem
@@ -384,7 +384,7 @@ pub mod chip8_engine {
                     .write(addr, &data, mem::size_of::<u8>());
 
                 dec = dec / 10;
-                let addr = (proc.regs.I + 1) as usize;
+                let addr = base + 1;
                 data[0] = dec % 10;
                 let _ = proc.mem
                     .lock()
@@ -393,7 +393,7 @@ pub mod chip8_engine {
 
 
                 dec = dec / 10;
-                let addr = proc.regs.I as usize;
+                let addr = base;
                 data[0] = dec % 10;
                 let _ = proc.mem
                     .lock()
@@ -410,7 +410,7 @@ pub mod chip8_engine {
             },
             0x55 => {
                 for i in 0..=var_x {
-                    let addr = (proc.regs.I + (i as u16)) as usize;
+                    let addr = proc.base_addr as usize + proc.regs.I as usize + i;
                     
                     let mut data: Vec<u8> = Vec::new(); 
                     data.push(proc.regs.V[i as usize]);
@@ -426,7 +426,7 @@ pub mod chip8_engine {
             },
             0x65 => {
                 for i in 0..=var_x {
-                    let addr = (proc.regs.I + (i as u16)) as usize;
+                    let addr = proc.base_addr as usize + proc.regs.I as usize + i;
                     
                     let data = proc.mem
                         .lock()
