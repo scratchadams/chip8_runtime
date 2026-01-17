@@ -103,12 +103,7 @@ pub mod chip8_engine {
         let _ = proc.mem
             .lock()
             .unwrap()
-            .write(addr1, &data, mem::size_of::<u8>());
-
-        let _ = proc.mem
-            .lock()
-            .unwrap()
-            .write(addr2, &data, mem::size_of::<u8>());
+            .write(addr1, &data, mem::size_of::<u16>());
 
         proc.regs.PC = extract_nnn!(instruction);
     }
@@ -139,7 +134,7 @@ pub mod chip8_engine {
         let var_x = extract_x!(instruction);
         let var_y = extract_y!(instruction);
 
-        if var_x == var_y {
+        if proc.regs.V[var_x as usize] == proc.regs.V[var_y as usize] {
             proc.regs.PC += 0x4;
         } else {
             proc.regs.PC += 0x2;
@@ -373,16 +368,8 @@ pub mod chip8_engine {
                 proc.regs.PC += 2;
             },
             0x29 => {
-                let addr = proc.base_addr as usize + (var_x * 5);
-                let val = proc.mem
-                    .lock()
-                    .unwrap()
-                    .read(addr, mem::size_of::<u16>())
-                    .unwrap()[0] as u16;
-
-                
                 //proc.regs.I = proc.mem[var_x * 5] as u16;
-                proc.regs.I = val;
+                proc.regs.I = (proc.regs.V[var_x] as u16) * 5;
                 proc.regs.PC += 2;
             },
             0x33 => {
