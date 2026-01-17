@@ -29,6 +29,7 @@ pub mod display {
     }
 
     impl DisplayWindow {
+        // Codex generated: buffer is pre-scaled (WIDTH x HEIGHT) to avoid per-frame resize.
         pub fn new() -> Result<DisplayWindow, Error> {
             let mut window = Window::new(
                 "Chip8 Process", 
@@ -48,6 +49,7 @@ pub mod display {
         }
 
         pub fn clear_screen(&mut self) {
+            // Codex generated: this clears the backing buffer; caller updates the window.
             self.buf
                 .iter_mut()
                 .for_each(|x| *x = 0);
@@ -61,6 +63,7 @@ pub mod display {
             self.buf[pos] = WHITE;
         }
 
+        // Codex generated: draw_sprite XORs sprite bits and sets VF on collision.
         pub fn draw_sprite(&mut self, regs: &mut Registers, mem: &[u8], x_pos: u32, y_pos: u32, var_z: usize) {
             let index = regs.I as usize;
             regs.V[0xF] = 0;

@@ -15,6 +15,7 @@ pub mod proc {
         };
     }
 
+    // Codex generated: CHIP-8 font sprites are 4x5 pixels, 5 bytes per glyph (0-F).
     const chip8_sprites: [u8; 80] = [
         0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
         0x20, 0x60, 0x20, 0x20, 0x70, // 1
@@ -99,6 +100,8 @@ pub mod proc {
         /// 
         /// A new display window is created per-process and associated
         /// with the Proc object
+        /// Codex generated: base_addr is the physical offset for this process'
+        /// 4KB page; PC and I remain CHIP-8 virtual addresses within that page.
         pub fn new(mem: &'a mut Arc<Mutex<SharedMemory>>) -> Result<Proc<'a>, Error> {
             let vaddr = mem.lock()
                 .unwrap()
@@ -119,6 +122,8 @@ pub mod proc {
         /// This function loads chip8 program text from a file
         /// and loads it into the process' memory space
         /// 
+        /// Codex generated: sprites are loaded at the base of the process page,
+        /// while program bytes start at 0x200 per CHIP-8 convention.
         pub fn load_program(&mut self, filename: String) -> Result<(), Error> {
             let program_text = fs::read(filename)?;
             if program_text.len() > shared_memory::shared_memory::PAGE_SIZE - 0x200 {
@@ -151,13 +156,17 @@ pub mod proc {
         /// The initial opcode is extracted from the instruction and used to call
         /// the various opcode handlers. The instruction value and Proc object are 
         /// passed to the matched handler to execute the instruction. 
+        /// Codex generated: the loop is intentionally tight; timers and exit
+        /// conditions are expected to be integrated externally.
         pub fn run_program(&mut self) {
+            // Codex generated: classic fetch-decode-execute loop for CHIP-8.
             loop {
                 let pc = self.regs.PC as usize;
                 
                 let addr1 = self.base_addr as usize + pc;
                 let addr2 = self.base_addr as usize + (pc + 1);
                 
+                // Codex generated: opcodes are big-endian in memory (hi byte then lo byte).
                 let val1 = self.mem
                     .lock()
                     .unwrap()

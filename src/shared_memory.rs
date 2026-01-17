@@ -25,6 +25,8 @@ pub mod shared_memory {
     /// each bit in phys_bitmap corresponds to a page of physical memory
     /// page allocators can consult the bitmap to determine which pages
     /// are available to be mapped to a virtual address
+    /// Codex generated: phys_bitmap is a simple 1-bit-per-page allocator; it
+    /// does not yet support freeing or multi-page reservations.
 
     pub struct SharedMemory {
         pub phys_mem: Vec<u8>,
@@ -52,6 +54,8 @@ pub mod shared_memory {
         ///  to non-contiguous 'physical' memory locations if any of the pages fail 
         /// to allocate, an error will be returned
         /// 
+        /// Codex generated: current implementation only supports 1 page and
+        /// does not yet handle the "no pages available" case.
         pub fn mmap(&mut self, pages: u8) -> Result<u32, Error> {
             let phys_page_count = PHYS_MEM_SIZE / PAGE_SIZE;
             let mut vaddr = 0x0;
@@ -78,6 +82,7 @@ pub mod shared_memory {
         /// vmmap takes a SharedMemory object and an available page,
         /// updates the associated page table entry and returns a
         /// virtual address
+        /// Codex generated: the virtual address encodes the pgd/pte index.
         fn vmmap(&mut self, page: usize) -> Result<u32, Error> {
             if page > 0xff {
                 return Err(Error::new(ErrorKind::AddrNotAvailable, "Page value too large."));
@@ -103,6 +108,7 @@ pub mod shared_memory {
         }
         /// vaddr_to_pte should take a vaddr and return a mutable slice
         /// reference to the memory associated with it
+        /// Codex generated: this returns the physical page base, not a slice.
         pub fn vaddr_to_pte(&mut self, addr: u32) -> Result<usize, Error> {
             let pgd_idx = (addr >> 16) as usize;
             let pte_idx = ((addr >> 12) & 0x0F) as usize;
@@ -146,22 +152,26 @@ pub mod shared_memory {
         /// the length of the write (how many bytes were written to memory)
         /// or an error value.
         /// 
+        /// Codex generated: current implementation ignores `len` and writes
+        /// all bytes from `data` starting at `addr`.
         pub fn write(&mut self, addr: usize, data: & Vec<u8>, len: usize) -> Result<(), Error> {
-            if data.len() > 0x1000 {
+            let write_len = len.min(data.len());
+            if write_len > 0x1000 {
                 return Err(Error::new(ErrorKind::Other, "write size must not exceed 0x1000 bytes"));
             }
 
             let end = addr
-                .checked_add(data.len())
+                .checked_add(write_len)
                 .ok_or_else(|| Error::new(ErrorKind::Other, "overflow computing write range"))? as usize;
 
-            self.phys_mem[addr..end].copy_from_slice(&data);
+            self.phys_mem[addr..end].copy_from_slice(&data[..write_len]);
 
             //println!("Wrote {:X?} to physical address range [{:#X}..{:#X})", data, addr, end);
 
             Ok(())
         }
 
+        // Codex generated: read clones a byte slice into a new Vec for callers.
         pub fn read(&mut self, addr: usize, len: usize) -> Result<Vec<u8>, Error> {
             let mut data:Vec<u8> = Vec::new();
             let end = addr + len as usize;

@@ -14,7 +14,10 @@ pub mod chip8_engine {
     /// nibble will always be extracted at the beginning of the event loop
     /// while additional variables will be extracted based on the needs of 
     /// each instruction handler.
+    /// Codex generated: each handler is responsible for advancing PC; the
+    /// dispatch loop does not auto-increment.
     
+    // Codex generated: keep opcode bit extraction consistent and centralized.
     macro_rules! extract_nnn {
         ($value:expr) => {
             ($value & 0x0FFF) as u16
@@ -83,14 +86,16 @@ pub mod chip8_engine {
         proc.regs.PC = extract_nnn!(instruction);
     }
 
-    //need to adjust to handle virtual addressing. maybe just keep a value in proc
-    //struct to handle the pgd and pte indexes.
+    // Codex generated: base_addr already acts as the per-process memory offset.
+    // If/when multi-page virtual memory is added, this call needs to push
+    // return addresses that can span pages.
     pub fn opcode_0x2(proc: &mut Proc, instruction: u16) {
         proc.regs.SP += 2;
 
         let addr1 = (proc.regs.SP as usize + proc.base_addr as usize) as usize;
         let addr2 = ((proc.regs.SP + 1) as usize) + proc.base_addr as usize;
 
+        // Codex generated: return address is stored as two bytes (hi/lo).
         let mut data: Vec<u8> = Vec::new();
         data.push(((proc.regs.PC + 2) >> 8) as u8);
         data.push((proc.regs.PC + 2) as u8);
@@ -304,6 +309,7 @@ pub mod chip8_engine {
         let y = proc.regs.V[var_y as usize] as u32;
         
         proc.regs.PC += 2;
+        // Codex generated: draw reads from process memory, bounded to its mapped page.
         let mem = &proc.mem
             .lock()
             .unwrap()
@@ -342,6 +348,7 @@ pub mod chip8_engine {
         let var_x = extract_x!(instruction) as usize;
         let var_kk = extract_kk!(instruction);
 
+        // Codex generated: 0xFx** opcodes mix timers, input, and memory ops.
         match var_kk {
             0x07 => {
                 proc.regs.V[var_x] = proc.regs.DT;
