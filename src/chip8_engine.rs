@@ -234,7 +234,7 @@ pub mod chip8_engine {
                 let temp = proc.regs.V[var_y].wrapping_sub(proc.regs.V[var_x]);
                 proc.regs.V[var_x] = temp;
 
-                if v_y >= v_x {
+                if v_y > v_x {
                     proc.regs.V[0xF] = 1;
                 } else {
                     proc.regs.V[0xF] = 0;
@@ -425,6 +425,7 @@ pub mod chip8_engine {
 
                     //proc.mem[(proc.regs.I + (i as u16)) as usize] = proc.regs.V[i as usize];
                 }
+                proc.regs.I += var_x as u16 + 1;
                 proc.regs.PC += 2;
             },
             0x65 => {
@@ -441,6 +442,7 @@ pub mod chip8_engine {
 
                     //proc.regs.V[i as usize] = proc.mem[(proc.regs.I + (i as u16)) as usize];
                 }
+                proc.regs.I += var_x as u16 + 1;
                 proc.regs.PC += 2;
             },
             _ => {
