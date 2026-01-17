@@ -318,14 +318,16 @@ pub mod chip8_engine {
 
         match var_kk {
             0x9e => {
-                if proc.regs.V[var_x] == proc.display.key_state {
+                // Codex generated: skip if the specific key indexed by Vx is down.
+                if proc.display.key_down[proc.regs.V[var_x] as usize] {
                     proc.regs.PC += 4;
                 } else {
                     proc.regs.PC += 2;
                 }
             },
             0xa1 => {
-                if proc.regs.V[var_x] != proc.display.key_state {
+                // Codex generated: example - if Vx=0xA and key 0xA is not pressed, skip.
+                if !proc.display.key_down[proc.regs.V[var_x] as usize] {
                     proc.regs.PC += 4;
                 } else {
                     proc.regs.PC += 2;
@@ -349,8 +351,9 @@ pub mod chip8_engine {
                 proc.regs.PC += 2;
             },
             0x0a => {
-                proc.regs.V[var_x] = proc.display.key_state;
-                if proc.display.key_state != 0xFF {
+                // Codex generated: block until any key is held; store its index in Vx.
+                if let Some(key) = proc.display.last_key {
+                    proc.regs.V[var_x] = key;
                     proc.regs.PC += 2;
                 }
             },

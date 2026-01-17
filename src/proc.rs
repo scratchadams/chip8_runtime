@@ -161,6 +161,9 @@ pub mod proc {
         pub fn run_program(&mut self) {
             // Codex generated: classic fetch-decode-execute loop for CHIP-8.
             loop {
+                // Codex generated: poll input each cycle so Ex9E/ExA1/Fx0A see live key states.
+                self.display.poll_input();
+
                 let pc = self.regs.PC as usize;
                 
                 let addr1 = self.base_addr as usize + pc;

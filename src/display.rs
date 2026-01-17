@@ -26,6 +26,8 @@ pub mod display {
         pub window: Window,
         pub buf: Vec<u32>,
         pub key_state: u8,
+        pub key_down: [bool; 16],
+        pub last_key: Option<u8>,
     }
 
     impl DisplayWindow {
@@ -45,6 +47,8 @@ pub mod display {
                 window: window,
                 buf: buf,
                 key_state: 0xFF,
+                key_down: [false; 16],
+                last_key: None,
             })
         }
 
@@ -53,6 +57,31 @@ pub mod display {
             self.buf
                 .iter_mut()
                 .for_each(|x| *x = 0);
+        }
+
+        // Codex generated: poll_input captures the current pressed state of all 16 CHIP-8 keys.
+        // Codex generated: example - if keys 0x3 and 0xA are both down, key_down[0x3] and
+        // key_down[0xA] are true, and last_key becomes the first one found in the scan order.
+        pub fn poll_input(&mut self) {
+            let mapping: [(Key, u8); 16] = [
+                (Key::Key1, 0x1), (Key::Key2, 0x2), (Key::Key3, 0x3), (Key::Key4, 0xC),
+                (Key::Q,    0x4), (Key::W,    0x5), (Key::E,    0x6), (Key::R,    0xD),
+                (Key::A,    0x7), (Key::S,    0x8), (Key::D,    0x9), (Key::F,    0xE),
+                (Key::Z,    0xA), (Key::X,    0x0), (Key::C,    0xB), (Key::V,    0xF),
+            ];
+
+            // Codex generated: last_key reflects one currently-held key (not edge-triggered).
+            self.last_key = None;
+            for (key, chip) in mapping {
+                let down = self.window.is_key_down(key);
+                self.key_down[chip as usize] = down;
+                if down && self.last_key.is_none() {
+                    self.last_key = Some(chip);
+                }
+            }
+
+            // Codex generated: keep key_state for compatibility; 0xFF means "no key".
+            self.key_state = self.last_key.unwrap_or(0xFF);
         }
 
         pub fn draw_pixel(&mut self, x_pos: u32, y_pos: u32) {
