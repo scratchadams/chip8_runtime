@@ -2,6 +2,7 @@ pub mod proc {
     use std::io::Error;
     use std::collections::HashMap;
     use std::fs;
+    use std::mem::size_of;
     use std::sync::{Arc, Mutex};
 
     use crate::chip8_engine::chip8_engine::*;
@@ -103,12 +104,18 @@ pub mod proc {
         /// Codex generated: base_addr is the physical offset for this process'
         /// 4KB page; PC and I remain CHIP-8 virtual addresses within that page.
         pub fn new(mem: &'a mut Arc<Mutex<SharedMemory>>) -> Result<Proc<'a>, Error> {
+            let display = DisplayWindow::new().unwrap();
+            Proc::new_with_display(mem, display)
+        }
+
+        // Codex generated: helper for tests and alternate frontends to supply a display implementation.
+        pub fn new_with_display(
+            mem: &'a mut Arc<Mutex<SharedMemory>>,
+            display: DisplayWindow,
+        ) -> Result<Proc<'a>, Error> {
             let vaddr = mem.lock()
                 .unwrap()
                 .mmap(1)?;
-
-
-            let display = DisplayWindow::new().unwrap();
 
             Ok(Proc {
                 proc_id: 0x41,
@@ -117,6 +124,12 @@ pub mod proc {
                 display: display,
                 base_addr: vaddr,
             })
+        }
+
+        // Codex generated: headless constructor used by tests to avoid opening a window.
+        pub fn new_headless(mem: &'a mut Arc<Mutex<SharedMemory>>) -> Result<Proc<'a>, Error> {
+            let display = DisplayWindow::new_headless().unwrap();
+            Proc::new_with_display(mem, display)
         }
 
         /// This function loads chip8 program text from a file
@@ -161,87 +174,92 @@ pub mod proc {
         pub fn run_program(&mut self) {
             // Codex generated: classic fetch-decode-execute loop for CHIP-8.
             loop {
-                // Codex generated: poll input each cycle so Ex9E/ExA1/Fx0A see live key states.
-                self.display.poll_input();
+                self.step();
+            }
+        }
 
-                let pc = self.regs.PC as usize;
-                
-                let addr1 = self.base_addr as usize + pc;
-                let addr2 = self.base_addr as usize + (pc + 1);
-                
-                // Codex generated: opcodes are big-endian in memory (hi byte then lo byte).
-                let val1 = self.mem
-                    .lock()
-                    .unwrap()
-                    .read(addr1, size_of::<u8>())
-                    .unwrap()[0];
-                let val1 = (val1 as u16) << 8;
+        // Codex generated: execute a single CHIP-8 instruction for test-driven stepping.
+        pub fn step(&mut self) {
+            // Codex generated: poll input each cycle so Ex9E/ExA1/Fx0A see live key states.
+            self.display.poll_input();
 
-                let val2 = self.mem
-                    .lock()
-                    .unwrap()
-                    .read(addr2, size_of::<u8>())
-                    .unwrap()[0];
-                let val2 = val2 as u16;
+            let pc = self.regs.PC as usize;
+            
+            let addr1 = self.base_addr as usize + pc;
+            let addr2 = self.base_addr as usize + (pc + 1);
+            
+            // Codex generated: opcodes are big-endian in memory (hi byte then lo byte).
+            let val1 = self.mem
+                .lock()
+                .unwrap()
+                .read(addr1, size_of::<u8>())
+                .unwrap()[0];
+            let val1 = (val1 as u16) << 8;
 
-                let instruction = val1 | val2;
+            let val2 = self.mem
+                .lock()
+                .unwrap()
+                .read(addr2, size_of::<u8>())
+                .unwrap()[0];
+            let val2 = val2 as u16;
 
-                //let instruction = ((self.mem.lock().unwrap().phys_mem[pc] as u16) << 8) | self.mem.lock().unwrap().phys_mem[pc+1] as u16;
-                
-                let opcode = extract_opcode!(instruction);
+            let instruction = val1 | val2;
 
-                match opcode {
-                    0x0 => {
-                        opcode_0x0(self, instruction);
-                    },
-                    0x1 => {
-                        opcode_0x1(self, instruction);
-                    },
-                    0x2 => {
-                        opcode_0x2(self, instruction);
-                    },
-                    0x3 => {
-                        opcode_0x3(self, instruction);
-                    },
-                    0x4 => {
-                        opcode_0x4(self, instruction);
-                    },
-                    0x5 => {
-                        opcode_0x5(self, instruction);
-                    },
-                    0x6 => {
-                        opcode_0x6(self, instruction);
-                    },
-                    0x7 => {
-                        opcode_0x7(self, instruction);
-                    },
-                    0x8 => {
-                        opcode_0x8(self, instruction);
-                    },
-                    0x9 => {
-                        opcode_0x9(self, instruction);
-                    },
-                    0xA => {
-                        opcode_0xa(self, instruction);
-                    },
-                    0xB => {
-                        opcode_0xb(self, instruction);
-                    },
-                    0xC => {
-                        opcode_0xc(self, instruction);
-                    },
-                    0xD => {
-                        opcode_0xd(self, instruction);
-                    },
-                    0xE => {
-                        opcode_0xe(self, instruction);
-                    },
-                    0xF => {
-                        opcode_0xf(self, instruction);
-                    },
-                    _ => {
-                        panic!("Unknown opcode: {:X}", opcode);
-                    }
+            //let instruction = ((self.mem.lock().unwrap().phys_mem[pc] as u16) << 8) | self.mem.lock().unwrap().phys_mem[pc+1] as u16;
+            
+            let opcode = extract_opcode!(instruction);
+
+            match opcode {
+                0x0 => {
+                    opcode_0x0(self, instruction);
+                },
+                0x1 => {
+                    opcode_0x1(self, instruction);
+                },
+                0x2 => {
+                    opcode_0x2(self, instruction);
+                },
+                0x3 => {
+                    opcode_0x3(self, instruction);
+                },
+                0x4 => {
+                    opcode_0x4(self, instruction);
+                },
+                0x5 => {
+                    opcode_0x5(self, instruction);
+                },
+                0x6 => {
+                    opcode_0x6(self, instruction);
+                },
+                0x7 => {
+                    opcode_0x7(self, instruction);
+                },
+                0x8 => {
+                    opcode_0x8(self, instruction);
+                },
+                0x9 => {
+                    opcode_0x9(self, instruction);
+                },
+                0xA => {
+                    opcode_0xa(self, instruction);
+                },
+                0xB => {
+                    opcode_0xb(self, instruction);
+                },
+                0xC => {
+                    opcode_0xc(self, instruction);
+                },
+                0xD => {
+                    opcode_0xd(self, instruction);
+                },
+                0xE => {
+                    opcode_0xe(self, instruction);
+                },
+                0xF => {
+                    opcode_0xf(self, instruction);
+                },
+                _ => {
+                    panic!("Unknown opcode: {:X}", opcode);
                 }
             }
         }

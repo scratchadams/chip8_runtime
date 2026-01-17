@@ -1,7 +1,7 @@
 pub mod display {
     use minifb::{Window, WindowOptions, Key};
-    use std::io::{Error, ErrorKind};
-    use crate::proc::proc::{Proc, Registers};
+    use std::io::Error;
+    use crate::proc::proc::Registers;
 
     const WHITE: u32 = 0xFFFFFF;
     const BLACK: u32 = 0x000000;
@@ -14,7 +14,7 @@ pub mod display {
     const HEIGHT: u32 =(LOGICAL_HEIGHT * SCALE) as u32;
 
     fn get_bit(byte: u8, pos: u8) -> u8 {
-        if(pos == 8) {
+        if pos == 8 {
             return byte & 0x01;
         } 
         
@@ -23,7 +23,7 @@ pub mod display {
 
 
     pub struct DisplayWindow {
-        pub window: Window,
+        pub window: Option<Window>,
         pub buf: Vec<u32>,
         pub key_state: u8,
         pub key_down: [bool; 16],
@@ -44,8 +44,19 @@ pub mod display {
             window.update_with_buffer(&buf, WIDTH as usize, HEIGHT as usize).unwrap();
             
             Ok(DisplayWindow {
-                window: window,
+                window: Some(window),
                 buf: buf,
+                key_state: 0xFF,
+                key_down: [false; 16],
+                last_key: None,
+            })
+        }
+
+        // Codex generated: headless display for tests; keeps the buffer but skips window updates.
+        pub fn new_headless() -> Result<DisplayWindow, Error> {
+            Ok(DisplayWindow {
+                window: None,
+                buf: vec![0; (WIDTH * HEIGHT) as usize],
                 key_state: 0xFF,
                 key_down: [false; 16],
                 last_key: None,
@@ -72,11 +83,19 @@ pub mod display {
 
             // Codex generated: last_key reflects one currently-held key (not edge-triggered).
             self.last_key = None;
-            for (key, chip) in mapping {
-                let down = self.window.is_key_down(key);
-                self.key_down[chip as usize] = down;
-                if down && self.last_key.is_none() {
-                    self.last_key = Some(chip);
+            if let Some(window) = self.window.as_ref() {
+                for (key, chip) in mapping {
+                    let down = window.is_key_down(key);
+                    self.key_down[chip as usize] = down;
+                    if down && self.last_key.is_none() {
+                        self.last_key = Some(chip);
+                    }
+                }
+            } else {
+                for (_, chip) in mapping {
+                    if self.key_down[chip as usize] && self.last_key.is_none() {
+                        self.last_key = Some(chip);
+                    }
                 }
             }
 
@@ -129,10 +148,11 @@ pub mod display {
                     }
                 }
             }
-            self
-                .window
-                .update_with_buffer(&self.buf, WIDTH as usize, HEIGHT as usize)
-                .unwrap();
+            if let Some(window) = self.window.as_mut() {
+                window
+                    .update_with_buffer(&self.buf, WIDTH as usize, HEIGHT as usize)
+                    .unwrap();
+            }
         }
     }
 
