@@ -4,6 +4,7 @@ pub mod proc {
     use std::fs;
     use std::mem::size_of;
     use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     use crate::chip8_engine::chip8_engine::*;
     use crate::shared_memory;
@@ -92,6 +93,7 @@ pub mod proc {
         pub mem: &'a mut Arc<Mutex<SharedMemory>>,
         pub display: DisplayWindow,
         pub base_addr: u32,
+        last_timer_tick: Instant,
     }
 
     impl<'a> Proc<'a> {
@@ -123,6 +125,7 @@ pub mod proc {
                 mem: mem,
                 display: display,
                 base_addr: vaddr,
+                last_timer_tick: Instant::now(),
             })
         }
 
@@ -182,6 +185,7 @@ pub mod proc {
         pub fn step(&mut self) {
             // Codex generated: poll input each cycle so Ex9E/ExA1/Fx0A see live key states.
             self.display.poll_input();
+            self.tick_timers();
 
             let pc = self.regs.PC as usize;
             
@@ -262,6 +266,23 @@ pub mod proc {
                     panic!("Unknown opcode: {:X}", opcode);
                 }
             }
+        }
+
+        // Codex generated: decrement DT/ST at ~60Hz based on wall-clock time.
+        fn tick_timers(&mut self) {
+            let tick = Duration::from_micros(1_000_000 / 60);
+            let now = Instant::now();
+            let elapsed = now.duration_since(self.last_timer_tick);
+            if elapsed < tick {
+                return;
+            }
+
+            let ticks = (elapsed.as_nanos() / tick.as_nanos()) as u32;
+            let dec = ticks.min(u8::MAX as u32) as u8;
+
+            self.regs.DT = self.regs.DT.saturating_sub(dec);
+            self.regs.ST = self.regs.ST.saturating_sub(dec);
+            self.last_timer_tick = self.last_timer_tick + (tick * ticks);
         }
     }
 

@@ -83,7 +83,8 @@ pub mod display {
 
             // Codex generated: last_key reflects one currently-held key (not edge-triggered).
             self.last_key = None;
-            if let Some(window) = self.window.as_ref() {
+            if let Some(window) = self.window.as_mut() {
+                let _ = window.update();
                 for (key, chip) in mapping {
                     let down = window.is_key_down(key);
                     self.key_down[chip as usize] = down;
