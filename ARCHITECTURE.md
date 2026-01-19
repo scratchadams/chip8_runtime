@@ -195,6 +195,11 @@ phys    = page_table[vpage] + offset
 So, if a program uses `I = 0x1300`, `PAGE_SIZE = 0x1000`, and
 `page_table[1] = 0x6000`, the physical memory location is `0x6300`.
 
+`I` is the CHIP-8 **index register** and is explicitly meant to hold addresses
+for memory operations (`Dxyn`, `Fx33`, `Fx55`, `Fx65`, `Fx29`, etc.). Translation
+does not change the meaning of `I`; it only changes where that virtual address
+lands in shared physical memory.
+
 ### 6.1 ROM Loading
 
 `Proc::load_program()` loads into **virtual addresses**:
@@ -225,6 +230,58 @@ RET:
 ```
 
 This is internally consistent with the "handlers advance PC" design.
+
+### 6.3 Classic vs Extended Addressing
+
+Classic CHIP-8 programs assume a **4KB address space** (0x000..0xFFF). Because
+most opcodes encode only a **12-bit address** (`nnn`), classic ROMs cannot
+directly refer to addresses above 0x0FFF.
+
+- **Classic mode (default)**  
+  - `vm_size = 0x1000` (one page).
+  - `PC`, `I`, and `SP` must stay within 0x000..0xFFF.
+  - All addressing remains spec-compliant.
+
+- **Extended mode (multi-page)**  
+  - `vm_size = N * 0x1000` (multiple pages).
+  - `PC`, `I`, and `SP` may reference addresses above 0x0FFF.
+  - Standard opcodes still only encode 12-bit immediates, so **extended
+    programs need a new mechanism** to set larger addresses (e.g., a syscall
+    frame, or a new opcode that loads a 16-bit address into `I`/`PC`).
+  - This approach preserves classic ROM behavior while enabling larger stacks
+    and data regions for extended ROMs.
+
+### 6.4 Visual: Virtual to Physical Translation
+
+```
+Virtual address (vaddr)
++---------------------------+
+|  vpage  |    offset       |
+| vaddr/PS|  vaddr%PS       |
++---------+-----------------+
+     |                 |
+     | lookup          | add
+     v                 v
+page_table[vpage]   offset
+     |                 |
+     +--------+--------+
+              v
+        phys = base + offset
+```
+
+### 6.5 Visual: Example Page Mapping
+
+```
+Proc virtual space (2 pages)           Shared physical memory
+0x0000 .. 0x0FFF  ------------------>  page_table[0] = 0x4000..0x4FFF
+0x1000 .. 0x1FFF  ------------------>  page_table[1] = 0x9000..0x9FFF
+
+Example:
+  I = 0x1300
+  vpage = 0x1300 / 0x1000 = 1
+  offset = 0x300
+  phys = 0x9000 + 0x300 = 0x9300
+```
 
 ---
 
