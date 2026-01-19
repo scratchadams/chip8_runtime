@@ -39,7 +39,7 @@ Before writing new runtime features, define the interface.
      - `VF` = error flag (0 = ok, 1 = error)
 
 3. **Memory model**
-   - Keep 4KB per Proc, or allow multi-page processes?
+   - Decide default page counts per Proc (multi-page is now supported).
    - Decide if a shared page exists for IPC or filesystem buffers.
 
 4. **Process model**
@@ -218,7 +218,7 @@ Goal: multiple programs can run concurrently and communicate.
 +------------------------------+      +------------------------------+
 | Proc A (CLI)                 |      | Proc B (Program)             |
 |  V regs, I, PC, SP           |      |  V regs, I, PC, SP            |
-|  page: 0x4000..0x4FFF        |      |  page: 0x5000..0x5FFF         |
+|  vpage0 -> phys 0x4???       |      |  vpage0 -> phys 0x5???        |
 +------------------------------+      +------------------------------+
               ^                                  ^
               | shared page / ipc                |
@@ -231,7 +231,8 @@ Goal: multiple programs can run concurrently and communicate.
 
 - **Opcode conflicts** with classic ROMs: keep extensions explicit.
 - **Timing sensitivity**: preemptive scheduling can alter ROM behavior.
-- **Memory limits**: 4KB pages constrain OS features; may require multi-page.
+- **Memory limits**: page counts constrain OS features; choose defaults that
+  leave room for stacks, CLI buffers, and filesystem I/O.
 - **Input determinism**: test stability can degrade if input polling is too complex.
 
 ---

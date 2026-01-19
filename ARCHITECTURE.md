@@ -11,8 +11,8 @@ extended. It is intentionally verbose so new contributors can orient quickly.
 The project is a Chip-8 interpreter implemented as a small runtime that:
 
 - Creates a shared memory arena for multiple "processes" (Chip-8 programs).
-- Spawns one or more Proc instances, each with a private display and a
-  per-process memory page.
+- Spawns one or more Proc instances, each with a private display and one or
+  more per-process virtual pages.
 - Executes a fetch-decode-execute loop that dispatches to opcode handlers.
 - Renders sprites to a scaled pixel buffer using minifb.
 - Provides test facilities for headless execution and single-step inspection.
@@ -44,7 +44,8 @@ chip8_runtime/
 ### 3.1 Proc and Registers
 
 `Proc` is the primary execution unit. It represents a single Chip-8 process
-with its own registers, display, and a base address into shared memory.
+with its own registers, display, and a page table that maps virtual pages into
+shared physical memory.
 
 ```
 Proc
@@ -54,33 +55,35 @@ Proc
 │   ├── I      : index register
 │   ├── PC     : program counter (virtual, per-process)
 │   ├── SP     : stack pointer (virtual, per-process)
-│   ├── DT/ST  : delay/sound timers (currently manual)
+│   ├── DT/ST  : delay/sound timers (ticked at ~60Hz in step)
 ├── mem: &mut Arc<Mutex<SharedMemory>>
 ├── display: DisplayWindow
-└── base_addr: u32  (physical page base for this process)
+├── page_table: Vec<u32>   (physical bases per virtual page)
+├── page_count: u16
+├── vm_size: u32           (virtual size in bytes)
+└── base_addr: u32         (physical base of virtual page 0, debug/compat)
 ```
 
 Key invariants:
 
-- `PC` and `I` are treated as **page-relative** addresses.
-- `base_addr` is the physical offset for this process's 4KB page.
-- `SP` is also page-relative and used to store return addresses in memory.
+- `PC`, `I`, and `SP` are **virtual addresses** translated via the page table.
+- `base_addr` is retained only for debug/compatibility; translation uses
+  `page_table` plus `translate()` helpers.
 
 ### 3.2 SharedMemory
 
 `SharedMemory` models a large physical memory array plus a bitmap allocator.
-Each process requests a page; `base_addr` is the start of that page.
+Each process requests N pages; `mmap()` returns the physical base of each page.
 
 ```
 SharedMemory
 ├── phys_mem: Vec<u8>        # 1MB physical memory
-├── page_table_entries: Vec<Vec<u32>>   # simple page table
-└── phys_bitmap: u128        # page allocator bitmap (1 bit/page)
+└── phys_bitmap: Vec<bool>   # page allocator bitmap (1 entry/page)
 ```
 
-The allocator is intentionally simple and currently supports only one page per
-process. Virtual-to-physical translation is done manually in code by adding
-`base_addr`.
+The allocator is intentionally simple and currently does not free pages.
+Virtual-to-physical translation is handled by `Proc::translate`, which maps
+virtual pages to physical bases via the per-proc page table.
 
 ### 3.3 DisplayWindow
 
@@ -123,14 +126,14 @@ configurable for real usage.
 `Proc::run_program()` repeatedly calls `step()`. The step function:
 
 1. Polls input (`DisplayWindow::poll_input`).
-2. Fetches two bytes at `base_addr + PC`.
+2. Fetches two bytes at virtual `PC` using `Proc::read_u8` (translation).
 3. Combines them into a 16-bit instruction (big-endian).
 4. Extracts the opcode (top nibble) and dispatches to the correct handler.
 
 ```
 loop:
   poll_input()
-  instr = mem[base+PC] << 8 | mem[base+PC+1]
+  instr = mem[translate(PC)] << 8 | mem[translate(PC+1)]
   opcode = instr >> 12
   dispatch(opcode, instr)
 ```
@@ -184,40 +187,45 @@ project.
 
 ## 6) Memory Model and Addressing
 
-The runtime uses **page-relative virtual addresses** for each process:
+The runtime uses **page-relative virtual addresses** for each process. Each
+Proc owns a simple, single-level page table that maps virtual pages to physical
+page bases:
 
 ```
-virtual address (PC/I/SP) -> base_addr + virtual offset -> phys_mem[]
+vpage   = vaddr / PAGE_SIZE
+offset  = vaddr % PAGE_SIZE
+phys    = page_table[vpage] + offset
 ```
 
-So, if a program uses `I = 0x300` and the process's `base_addr = 0x4000`, the
-physical memory location is `0x4300`.
+So, if a program uses `I = 0x1300`, `PAGE_SIZE = 0x1000`, and
+`page_table[1] = 0x6000`, the physical memory location is `0x6300`.
 
 ### 6.1 ROM Loading
 
-`Proc::load_program()` loads:
+`Proc::load_program()` loads into **virtual addresses**:
 
 ```
-base_addr + 0x000 .. 0x050  : font sprites (80 bytes)
-base_addr + 0x200 ..        : program text
+0x000 .. 0x050  : font sprites (80 bytes)
+0x200 ..        : program text
 ```
 
 This matches standard Chip-8 memory layout (program entry at 0x200).
 
 ### 6.2 Stack
 
-`SP` is page-relative. The current implementation stores a two-byte return
-address at `base_addr + SP` and increments `SP` by 2 on call.
+`SP` is a virtual address. The current implementation stores a two-byte return
+address at `SP` (translated via `Proc::write_u8`) and increments `SP` by 2 on
+call.
 
 ```
 CALL nnn:
   SP += 2
-  mem[base+SP]   = high(PC+2)
-  mem[base+SP+1] = low(PC+2)
+  mem[SP]   = high(PC+2)
+  mem[SP+1] = low(PC+2)
   PC = nnn
 
 RET:
-  PC = mem[base+SP] << 8 | mem[base+SP+1]
+  PC = mem[SP] << 8 | mem[SP+1]
   SP -= 2
 ```
 
@@ -229,9 +237,10 @@ This is internally consistent with the "handlers advance PC" design.
 
 ### 7.1 Display Rendering
 
-Chip-8 uses XOR drawing and collision detection. The renderer:
+Chip-8 uses XOR drawing and collision detection. The opcode handler:
 
-- Reads sprite bytes from `mem[I..I+n]`.
+- Reads sprite bytes from `mem[I..I+n]` via `Proc::read_u8`.
+- Passes those bytes to `DisplayWindow::draw_sprite`.
 - XORs each bit with the current buffer.
 - Sets `VF = 1` if any pixels are erased (collision).
 - Wraps X/Y when sprite extends past the screen.
@@ -278,7 +287,7 @@ A 0 B F         -> Z X C V
         +------------------+        +------------------+
         |  Proc            |        |  DisplayWindow   |
         |  regs, I/PC/SP   |<------>|  buf, input      |
-        |  base_addr       |        +------------------+
+        |  page_table      |        +------------------+
         |  mem (Shared)    |
         +---------+--------+
                   |
@@ -292,7 +301,7 @@ A 0 B F         -> Z X C V
 ### 9.2 Fetch-Decode-Execute Loop
 
 ```
-PC -> [mem[base+PC], mem[base+PC+1]] -> instruction
+PC -> [mem[translate(PC)], mem[translate(PC+1)]] -> instruction
              |
              v
      opcode = instruction >> 12
@@ -310,10 +319,16 @@ PC -> [mem[base+PC], mem[base+PC+1]] -> instruction
 virtual addr (I/PC/SP)
          |
          v
-physical addr = base_addr + virtual addr
+vpage = addr / PAGE_SIZE
          |
          v
-SharedMemory.phys_mem[physical addr]
+physical base = page_table[vpage]
+         |
+         v
+phys = physical base + (addr % PAGE_SIZE)
+         |
+         v
+SharedMemory.phys_mem[phys]
 ```
 
 ---
@@ -324,16 +339,17 @@ SharedMemory.phys_mem[physical addr]
 - **Macro-based field extraction** centralizes bit handling and reduces bugs.
 - **Per-process display** allows multiple concurrent Proc instances with their
   own windows (or headless buffers).
-- **SharedMemory + base_addr** is a small “virtualization” layer; it enables
-  separate address spaces without a complex MMU.
+- **SharedMemory + page_table** is a small “virtualization” layer; it enables
+  separate address spaces, and `Proc::translate` centralizes the mapping logic.
 
 ---
 
 ## 11) Suggested Next Steps / Improvements
 
-1. **Timer ticking**  
-   Delay and sound timers (`DT`/`ST`) are updated only when opcodes write them.
-   A 60Hz tick should decrement them to be spec‑accurate.
+1. **Timer accuracy**  
+   Timers now tick at ~60Hz inside `Proc::step`, but the cadence depends on how
+   often `step()` is called. If you add a scheduler or throttling, consider
+   decoupling the timer tick from instruction rate.
 
 2. **Configurable ROM loading**  
    `main.rs` hard-codes paths like `/root/rust/chip8/ibm.ch8`. Add CLI args or
@@ -343,9 +359,10 @@ SharedMemory.phys_mem[physical addr]
    Some handlers accept any `0x5xy?` or `0x9xy?` without verifying the low nibble.
    Decide whether to enforce exact opcode shapes and log invalid forms.
 
-4. **Memory allocator bounds**  
-   `phys_bitmap` is `u128` but `PHYS_MEM_SIZE / PAGE_SIZE` is 256 pages. If you
-   plan to allocate >128 pages, expand the bitmap or replace with `Vec<bool>`.
+4. **Memory allocator lifecycle**  
+   The allocator is `Vec<bool>` and supports multi-page allocations, but pages
+   are never freed. If you add process teardown, implement `munmap()` and
+   consider fragmentation/compaction.
 
 5. **Display and input abstraction**  
    The new `new_with_display` and `new_headless` hooks are good. If you plan to

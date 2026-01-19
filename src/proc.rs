@@ -92,6 +92,11 @@ pub mod proc {
         pub regs: Registers,
         pub mem: &'a mut Arc<Mutex<SharedMemory>>,
         pub display: DisplayWindow,
+        pub page_table: Vec<u32>,
+        pub page_count: u16,
+        pub vm_size: u32,
+        // Codex generated: base_addr is kept for compatibility/debugging and
+        // represents the physical base of virtual page 0.
         pub base_addr: u32,
         last_timer_tick: Instant,
     }
@@ -103,11 +108,11 @@ pub mod proc {
         /// 
         /// A new display window is created per-process and associated
         /// with the Proc object
-        /// Codex generated: base_addr is the physical offset for this process'
-        /// 4KB page; PC and I remain CHIP-8 virtual addresses within that page.
+        /// Codex generated: base_addr is the physical base of virtual page 0;
+        /// PC and I are virtual addresses translated through the page table.
         pub fn new(mem: &'a mut Arc<Mutex<SharedMemory>>) -> Result<Proc<'a>, Error> {
             let display = DisplayWindow::new().unwrap();
-            Proc::new_with_display(mem, display)
+            Proc::new_with_display_and_pages(mem, display, 1)
         }
 
         // Codex generated: helper for tests and alternate frontends to supply a display implementation.
@@ -115,16 +120,30 @@ pub mod proc {
             mem: &'a mut Arc<Mutex<SharedMemory>>,
             display: DisplayWindow,
         ) -> Result<Proc<'a>, Error> {
-            let vaddr = mem.lock()
+            Proc::new_with_display_and_pages(mem, display, 1)
+        }
+
+        // Codex generated: constructor with an explicit page count for multi-page VMs.
+        pub fn new_with_display_and_pages(
+            mem: &'a mut Arc<Mutex<SharedMemory>>,
+            display: DisplayWindow,
+            pages: u16,
+        ) -> Result<Proc<'a>, Error> {
+            let page_table = mem.lock()
                 .unwrap()
-                .mmap(1)?;
+                .mmap(pages)?;
+            let vm_size = pages as u32 * shared_memory::shared_memory::PAGE_SIZE as u32;
+            let base_addr = page_table[0];
 
             Ok(Proc {
                 proc_id: 0x41,
                 regs: Registers::default(),
                 mem: mem,
                 display: display,
-                base_addr: vaddr,
+                page_table: page_table,
+                page_count: pages,
+                vm_size: vm_size,
+                base_addr: base_addr,
                 last_timer_tick: Instant::now(),
             })
         }
@@ -132,7 +151,62 @@ pub mod proc {
         // Codex generated: headless constructor used by tests to avoid opening a window.
         pub fn new_headless(mem: &'a mut Arc<Mutex<SharedMemory>>) -> Result<Proc<'a>, Error> {
             let display = DisplayWindow::new_headless().unwrap();
-            Proc::new_with_display(mem, display)
+            Proc::new_with_display_and_pages(mem, display, 1)
+        }
+
+        // Codex generated: headless constructor with a multi-page virtual space.
+        pub fn new_headless_with_pages(
+            mem: &'a mut Arc<Mutex<SharedMemory>>,
+            pages: u16,
+        ) -> Result<Proc<'a>, Error> {
+            let display = DisplayWindow::new_headless().unwrap();
+            Proc::new_with_display_and_pages(mem, display, pages)
+        }
+
+        // Codex generated: translate a virtual address into a physical address.
+        pub fn translate(&self, vaddr: u32) -> Result<usize, Error> {
+            if vaddr >= self.vm_size {
+                return Err(Error::new(std::io::ErrorKind::Other, "virtual address out of range"));
+            }
+
+            let page = (vaddr as usize) / shared_memory::shared_memory::PAGE_SIZE;
+            let offset = (vaddr as usize) % shared_memory::shared_memory::PAGE_SIZE;
+            let phys_base = *self.page_table
+                .get(page)
+                .ok_or_else(|| Error::new(std::io::ErrorKind::Other, "page table index out of range"))? as usize;
+
+            Ok(phys_base + offset)
+        }
+
+        // Codex generated: read a single byte using virtual addressing.
+        pub fn read_u8(&mut self, vaddr: u32) -> Result<u8, Error> {
+            let phys = self.translate(vaddr)?;
+            Ok(self.mem
+                .lock()
+                .unwrap()
+                .read(phys, size_of::<u8>())?
+                [0])
+        }
+
+        // Codex generated: write a single byte using virtual addressing.
+        pub fn write_u8(&mut self, vaddr: u32, value: u8) -> Result<(), Error> {
+            let phys = self.translate(vaddr)?;
+            let data = vec![value];
+            self.mem
+                .lock()
+                .unwrap()
+                .write(phys, &data, data.len())
+        }
+
+        // Codex generated: write a byte slice across page boundaries if needed.
+        pub fn write_bytes(&mut self, vaddr: u32, data: &[u8]) -> Result<(), Error> {
+            for (idx, byte) in data.iter().enumerate() {
+                let addr = vaddr
+                    .checked_add(idx as u32)
+                    .ok_or_else(|| Error::new(std::io::ErrorKind::Other, "overflow computing write address"))?;
+                self.write_u8(addr, *byte)?;
+            }
+            Ok(())
         }
 
         /// This function loads chip8 program text from a file
@@ -142,24 +216,19 @@ pub mod proc {
         /// while program bytes start at 0x200 per CHIP-8 convention.
         pub fn load_program(&mut self, filename: String) -> Result<(), Error> {
             let program_text = fs::read(filename)?;
-            if program_text.len() > shared_memory::shared_memory::PAGE_SIZE - 0x200 {
+            let max_size = self.vm_size as usize - 0x200;
+            if program_text.len() > max_size {
                 return Err(Error::new(std::io::ErrorKind::FileTooLarge, "File too large"));
             }
 
             //copy sprites into process memory
             //self.mem[0x0..0x50].copy_from_slice(&chip8_sprites);
-            let sprite_addr = self.base_addr as usize + 0x0;
             let sprite_vec = chip8_sprites.to_vec();
-            let _ = self.mem.lock()
-                .unwrap()
-                .write(sprite_addr, &sprite_vec, sprite_vec.len());
+            self.write_bytes(0x0, &sprite_vec)?;
 
             //copy program text into process memory
             //self.mem.lock().unwrap()[0x200..(0x200 + program_text.len())].copy_from_slice(&program_text);
-            let prog_addr = self.base_addr as usize + 0x200;
-            let _ = self.mem.lock()
-                .unwrap()
-                .write(prog_addr, &program_text, program_text.len());
+            self.write_bytes(0x200, &program_text)?;
 
             Ok(())
         }
@@ -189,28 +258,12 @@ pub mod proc {
 
             let pc = self.regs.PC as usize;
             
-            let addr1 = self.base_addr as usize + pc;
-            let addr2 = self.base_addr as usize + (pc + 1);
-            
             // Codex generated: opcodes are big-endian in memory (hi byte then lo byte).
-            let val1 = self.mem
-                .lock()
-                .unwrap()
-                .read(addr1, size_of::<u8>())
-                .unwrap()[0];
-            let val1 = (val1 as u16) << 8;
-
-            let val2 = self.mem
-                .lock()
-                .unwrap()
-                .read(addr2, size_of::<u8>())
-                .unwrap()[0];
-            let val2 = val2 as u16;
-
-            let instruction = val1 | val2;
-
-            //let instruction = ((self.mem.lock().unwrap().phys_mem[pc] as u16) << 8) | self.mem.lock().unwrap().phys_mem[pc+1] as u16;
+            let val1 = self.read_u8(pc as u32).unwrap() as u16;
+            let val1 = val1 << 8;
+            let val2 = self.read_u8((pc + 1) as u32).unwrap() as u16;
             
+            let instruction = val1 | val2;
             let opcode = extract_opcode!(instruction);
 
             match opcode {

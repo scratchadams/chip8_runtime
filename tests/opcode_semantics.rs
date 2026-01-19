@@ -1,12 +1,8 @@
 use std::sync::{Arc, Mutex};
 
+use chip8_runtime::display::display::SCALE;
 use chip8_runtime::proc::proc::Proc;
 use chip8_runtime::shared_memory::shared_memory::SharedMemory;
-
-const LOGICAL_WIDTH: usize = 64;
-const LOGICAL_HEIGHT: usize = 32;
-const SCALE: usize = 10;
-const WIDTH: usize = LOGICAL_WIDTH * SCALE;
 
 fn new_headless_proc() -> Proc<'static> {
     let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
@@ -14,26 +10,21 @@ fn new_headless_proc() -> Proc<'static> {
     Proc::new_headless(mem_ref).unwrap()
 }
 
+fn new_headless_proc_with_pages(pages: u16) -> Proc<'static> {
+    let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
+    let mem_ref: &'static mut Arc<Mutex<SharedMemory>> = Box::leak(Box::new(mem));
+    Proc::new_headless_with_pages(mem_ref, pages).unwrap()
+}
+
 fn write_opcode(proc: &mut Proc<'_>, addr: u16, opcode: u16) {
     let hi = (opcode >> 8) as u8;
     let lo = opcode as u8;
     let data = vec![hi, lo];
-    let phys = proc.base_addr as usize + addr as usize;
-    proc.mem
-        .lock()
-        .unwrap()
-        .write(phys, &data, data.len())
-        .unwrap();
+    proc.write_bytes(addr as u32, &data).unwrap();
 }
 
 fn write_byte(proc: &mut Proc<'_>, addr: u16, value: u8) {
-    let data = vec![value];
-    let phys = proc.base_addr as usize + addr as usize;
-    proc.mem
-        .lock()
-        .unwrap()
-        .write(phys, &data, data.len())
-        .unwrap();
+    proc.write_u8(addr as u32, value).unwrap();
 }
 
 fn exec_opcode(proc: &mut Proc<'_>, opcode: u16) {
@@ -63,18 +54,8 @@ fn opcode_00ee_returns_to_caller() {
     assert_eq!(proc.regs.PC, 0x300);
     assert_eq!(proc.regs.SP, 0xFA2);
 
-    let ret_hi = proc
-        .mem
-        .lock()
-        .unwrap()
-        .read(proc.base_addr as usize + proc.regs.SP as usize, 1)
-        .unwrap()[0];
-    let ret_lo = proc
-        .mem
-        .lock()
-        .unwrap()
-        .read(proc.base_addr as usize + proc.regs.SP as usize + 1, 1)
-        .unwrap()[0];
+    let ret_hi = proc.read_u8(proc.regs.SP as u32).unwrap();
+    let ret_lo = proc.read_u8((proc.regs.SP + 1) as u32).unwrap();
     assert_eq!(ret_hi, 0x02);
     assert_eq!(ret_lo, 0x02);
 
@@ -331,8 +312,11 @@ fn opcode_fx33_stores_bcd() {
     proc.regs.V[7] = 137;
     exec_opcode(&mut proc, 0xF733);
 
-    let base = proc.base_addr as usize + 0x300;
-    let data = proc.mem.lock().unwrap().read(base, 3).unwrap();
+    let data = vec![
+        proc.read_u8(0x300).unwrap(),
+        proc.read_u8(0x301).unwrap(),
+        proc.read_u8(0x302).unwrap(),
+    ];
     assert_eq!(data, vec![1, 3, 7]);
 }
 
@@ -345,8 +329,11 @@ fn opcode_fx55_stores_registers_and_increments_i() {
     proc.regs.V[2] = 3;
     exec_opcode(&mut proc, 0xF255);
 
-    let base = proc.base_addr as usize + 0x300;
-    let data = proc.mem.lock().unwrap().read(base, 3).unwrap();
+    let data = vec![
+        proc.read_u8(0x300).unwrap(),
+        proc.read_u8(0x301).unwrap(),
+        proc.read_u8(0x302).unwrap(),
+    ];
     assert_eq!(data, vec![1, 2, 3]);
     assert_eq!(proc.regs.I, 0x303);
 }
@@ -364,4 +351,15 @@ fn opcode_fx65_loads_registers_and_increments_i() {
     assert_eq!(proc.regs.V[1], 0x55);
     assert_eq!(proc.regs.V[2], 0xCC);
     assert_eq!(proc.regs.I, 0x303);
+}
+
+#[test]
+fn virtual_translation_spans_pages() {
+    let mut proc = new_headless_proc_with_pages(2);
+    // Codex generated: verify distinct bytes across the 0x0FFF/0x1000 boundary.
+    proc.write_u8(0x0FFF, 0xAA).unwrap();
+    proc.write_u8(0x1000, 0x55).unwrap();
+
+    assert_eq!(proc.read_u8(0x0FFF).unwrap(), 0xAA);
+    assert_eq!(proc.read_u8(0x1000).unwrap(), 0x55);
 }

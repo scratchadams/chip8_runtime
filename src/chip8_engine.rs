@@ -1,8 +1,6 @@
 pub mod chip8_engine {
-    use crate::display::display::DisplayWindow;
     use crate::proc::proc::Proc;
     use rand::Rng;
-    use std::mem;
     /// To handle the chip8 instruction set, we will define a handler
     /// function for each first nibble (i.e - 0x0, 0x1, 0x2, etc...)
     /// any nibble which has multiple instructions associated with it
@@ -57,21 +55,11 @@ pub mod chip8_engine {
                 proc.regs.PC += 2;
             },
             0xee => {
-                let addr1 = (proc.regs.SP as usize) + proc.base_addr as usize;
-                let addr2 = ((proc.regs.SP + 1) as usize) + proc.base_addr as usize;
-
-                let val1 = proc.mem
-                    .lock()
-                    .unwrap()
-                    .read(addr1, mem::size_of::<u16>())
-                    .unwrap()[0] as u16;
+                // Codex generated: stack addresses are virtual; translate on read.
+                let val1 = proc.read_u8(proc.regs.SP as u32).unwrap() as u16;
                 let val1 = val1 << 8;
 
-                let val2 = proc.mem
-                    .lock()
-                    .unwrap()
-                    .read(addr2, mem::size_of::<u16>())
-                    .unwrap()[0] as u16;
+                let val2 = proc.read_u8((proc.regs.SP + 1) as u32).unwrap() as u16;
 
                 proc.regs.PC = val1 | val2;
                 proc.regs.SP -= 2;
@@ -86,24 +74,18 @@ pub mod chip8_engine {
         proc.regs.PC = extract_nnn!(instruction);
     }
 
-    // Codex generated: base_addr already acts as the per-process memory offset.
-    // If/when multi-page virtual memory is added, this call needs to push
-    // return addresses that can span pages.
+    // Codex generated: stack uses virtual addresses; translation handles paging.
     pub fn opcode_0x2(proc: &mut Proc, instruction: u16) {
         proc.regs.SP += 2;
-
-        let addr1 = (proc.regs.SP as usize + proc.base_addr as usize) as usize;
-        let addr2 = ((proc.regs.SP + 1) as usize) + proc.base_addr as usize;
 
         // Codex generated: return address is stored as two bytes (hi/lo).
         let mut data: Vec<u8> = Vec::new();
         data.push(((proc.regs.PC + 2) >> 8) as u8);
         data.push((proc.regs.PC + 2) as u8);
         
-        let _ = proc.mem
-            .lock()
-            .unwrap()
-            .write(addr1, &data, mem::size_of::<u16>());
+        // Codex generated: write via virtual addresses to respect paging.
+        proc.write_u8(proc.regs.SP as u32, data[0]).unwrap();
+        proc.write_u8((proc.regs.SP + 1) as u32, data[1]).unwrap();
 
         proc.regs.PC = extract_nnn!(instruction);
     }
@@ -303,13 +285,14 @@ pub mod chip8_engine {
         let y = proc.regs.V[var_y as usize] as u32;
         
         proc.regs.PC += 2;
-        // Codex generated: draw reads from process memory, bounded to its mapped page.
-        let mem = &proc.mem
-            .lock()
-            .unwrap()
-            .phys_mem[proc.base_addr as usize..(proc.base_addr+0x1000) as usize];
+        // Codex generated: sprite bytes are read via virtual addresses (may cross pages).
+        let mut sprite: Vec<u8> = Vec::with_capacity(var_z);
+        for i in 0..var_z {
+            let addr = (proc.regs.I + i as u16) as u32;
+            sprite.push(proc.read_u8(addr).unwrap());
+        }
 
-        proc.display.draw_sprite(&mut proc.regs, &mem, x, y, var_z);
+        proc.display.draw_sprite(&mut proc.regs, &sprite, x, y);
     }
 
     pub fn opcode_0xe(proc: &mut Proc, instruction: u16) {
@@ -377,31 +360,18 @@ pub mod chip8_engine {
             0x33 => {
                 let mut dec: u8 = proc.regs.V[var_x];
                 
-                let base = proc.base_addr as usize + proc.regs.I as usize;
+                let base = proc.regs.I as u32;
                 let addr = base + 2;
-                let mut data: Vec<u8> = Vec::new();
-                data.push(dec % 10);
-                let _ = proc.mem
-                    .lock()
-                    .unwrap()
-                    .write(addr, &data, mem::size_of::<u8>());
+                proc.write_u8(addr, dec % 10).unwrap();
 
                 dec = dec / 10;
                 let addr = base + 1;
-                data[0] = dec % 10;
-                let _ = proc.mem
-                    .lock()
-                    .unwrap()
-                    .write(addr, &data, mem::size_of::<u8>());
+                proc.write_u8(addr, dec % 10).unwrap();
 
 
                 dec = dec / 10;
                 let addr = base;
-                data[0] = dec % 10;
-                let _ = proc.mem
-                    .lock()
-                    .unwrap()
-                    .write(addr, &data, mem::size_of::<u8>());
+                proc.write_u8(addr, dec % 10).unwrap();
 
                 //proc.mem[(proc.regs.I + 2) as usize] = dec % 10;
                 //dec = dec / 10;
@@ -413,15 +383,8 @@ pub mod chip8_engine {
             },
             0x55 => {
                 for i in 0..=var_x {
-                    let addr = proc.base_addr as usize + proc.regs.I as usize + i;
-                    
-                    let mut data: Vec<u8> = Vec::new(); 
-                    data.push(proc.regs.V[i as usize]);
-                    
-                    let _ = proc.mem
-                        .lock()
-                        .unwrap()
-                        .write(addr, &data, mem::size_of::<u8>());
+                    let addr = (proc.regs.I + i as u16) as u32;
+                    proc.write_u8(addr, proc.regs.V[i as usize]).unwrap();
 
                     //proc.mem[(proc.regs.I + (i as u16)) as usize] = proc.regs.V[i as usize];
                 }
@@ -430,13 +393,8 @@ pub mod chip8_engine {
             },
             0x65 => {
                 for i in 0..=var_x {
-                    let addr = proc.base_addr as usize + proc.regs.I as usize + i;
-                    
-                    let data = proc.mem
-                        .lock()
-                        .unwrap()
-                        .read(addr, size_of::<u8>())
-                        .unwrap()[0] as u8;
+                    let addr = (proc.regs.I + i as u16) as u32;
+                    let data = proc.read_u8(addr).unwrap();
 
                     proc.regs.V[i as usize] = data;
 

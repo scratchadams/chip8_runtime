@@ -164,7 +164,8 @@ stack.
 ## 5) Multi-Page Virtual Address Space
 
 To allow larger stacks (and larger programs), expand each process’s virtual
-address space from 4KB to N * 4KB pages.
+address space from 4KB to N * 4KB pages. The runtime now implements a
+single-level page table for this mapping.
 
 ### 5.1 Virtual Address Layout (Example: 8 pages = 32KB)
 
@@ -186,24 +187,23 @@ address is translated to physical by:
 3. Physical = `phys_page_base + (addr % PAGE_SIZE)`
 
 
-### 5.3 Required Changes (High-Level)
+### 5.3 Current Status / Required Changes
 
 1. **SharedMemory allocator**
-   - Expand bitmap to track 256+ pages (currently u128 = 128 pages).
-   - Support allocating multiple pages in one call.
-   - Return a virtual base address (0x0000) but map multiple pages in the PTE.
+   - Implemented: bitmap is `Vec<bool>` and `mmap(pages)` allocates N pages.
+   - Still needed: `munmap()` or free list for process teardown.
 
 2. **Proc structure**
-   - Add `page_count` or `vm_size` to track virtual size.
-   - Define stack base `stack_top = vm_size - 1`.
+   - Implemented: `page_table`, `page_count`, and `vm_size`.
+   - Still needed: explicit stack bounds (`stack_top = vm_size - 1`).
 
 3. **Memory access helpers**
-   - Replace manual `base_addr + offset` usage with `translate(proc, vaddr)`.
-   - This keeps multi-page logic centralized and less error-prone.
+   - Implemented: `translate()` plus `read_u8`/`write_u8` helpers.
+   - Still needed: centralize bounds checks and error reporting.
 
 4. **Stack bounds enforcement**
-   - Stack operations must check against `stack_limit` and `stack_top`.
-   - Return VF=1 on overflow/underflow.
+   - Still needed: enforce `stack_limit` and `stack_top` on call/return and
+     on any future stack syscalls. Return VF=1 on overflow/underflow.
 
 ---
 

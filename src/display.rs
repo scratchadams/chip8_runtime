@@ -8,7 +8,7 @@ pub mod display {
 
     const LOGICAL_WIDTH: usize = 64;
     const LOGICAL_HEIGHT: usize = 32;
-    const SCALE: usize = 10;
+    pub const SCALE: usize = 10;
 
     const WIDTH: u32 = (LOGICAL_WIDTH * SCALE) as u32;
     const HEIGHT: u32 =(LOGICAL_HEIGHT * SCALE) as u32;
@@ -113,12 +113,11 @@ pub mod display {
         }
 
         // Codex generated: draw_sprite XORs sprite bits and sets VF on collision.
-        pub fn draw_sprite(&mut self, regs: &mut Registers, mem: &[u8], x_pos: u32, y_pos: u32, var_z: usize) {
-            let index = regs.I as usize;
+        pub fn draw_sprite(&mut self, regs: &mut Registers, sprite: &[u8], x_pos: u32, y_pos: u32) {
             regs.V[0xF] = 0;
 
-            for byte_index in 0..var_z {
-                let byte = mem[index + byte_index];
+            for (byte_index, byte) in sprite.iter().enumerate() {
+                let byte = *byte;
 
                 for bit_index in 0..8 {
                     let x = (x_pos + bit_index) % LOGICAL_WIDTH as u32;
