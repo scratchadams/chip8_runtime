@@ -1,6 +1,5 @@
 pub mod proc {
     use std::io::Error;
-    use std::collections::HashMap;
     use std::fs;
     use std::mem::size_of;
     use std::sync::{Arc, Mutex};
@@ -18,7 +17,7 @@ pub mod proc {
     }
 
     // Codex generated: CHIP-8 font sprites are 4x5 pixels, 5 bytes per glyph (0-F).
-    const chip8_sprites: [u8; 80] = [
+    const CHIP8_SPRITES: [u8; 80] = [
         0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
         0x20, 0x60, 0x20, 0x20, 0x70, // 1
         0xF0, 0x10, 0xF0, 0x80, 0xF0, // 2
@@ -38,6 +37,7 @@ pub mod proc {
     ];
 
 
+    #[allow(non_snake_case)]
     pub struct Registers {
         pub V: [u8; 16],
         pub DT: u8,
@@ -75,29 +75,12 @@ pub mod proc {
         }
     }
 
-    pub struct ProcessTable<'a> {
-        pub procs: HashMap<u32, Proc<'a>>,
-    }
-
-    impl<'a> ProcessTable<'a> {
-        pub fn new() -> Result<ProcessTable<'a>, Error> {
-            Ok(ProcessTable {
-                procs: HashMap::new(),
-            })
-        }
-    }
-
     pub struct Proc<'a> {
-        pub proc_id: u32,
         pub regs: Registers,
         pub mem: &'a mut Arc<Mutex<SharedMemory>>,
         pub display: DisplayWindow,
         pub page_table: Vec<u32>,
-        pub page_count: u16,
         pub vm_size: u32,
-        // Codex generated: base_addr is kept for compatibility/debugging and
-        // represents the physical base of virtual page 0.
-        pub base_addr: u32,
         last_timer_tick: Instant,
     }
 
@@ -108,18 +91,9 @@ pub mod proc {
         /// 
         /// A new display window is created per-process and associated
         /// with the Proc object
-        /// Codex generated: base_addr is the physical base of virtual page 0;
-        /// PC and I are virtual addresses translated through the page table.
+        /// Codex generated: PC and I are virtual addresses translated through the page table.
         pub fn new(mem: &'a mut Arc<Mutex<SharedMemory>>) -> Result<Proc<'a>, Error> {
             let display = DisplayWindow::new().unwrap();
-            Proc::new_with_display_and_pages(mem, display, 1)
-        }
-
-        // Codex generated: helper for tests and alternate frontends to supply a display implementation.
-        pub fn new_with_display(
-            mem: &'a mut Arc<Mutex<SharedMemory>>,
-            display: DisplayWindow,
-        ) -> Result<Proc<'a>, Error> {
             Proc::new_with_display_and_pages(mem, display, 1)
         }
 
@@ -133,34 +107,14 @@ pub mod proc {
                 .unwrap()
                 .mmap(pages)?;
             let vm_size = pages as u32 * shared_memory::shared_memory::PAGE_SIZE as u32;
-            let base_addr = page_table[0];
-
             Ok(Proc {
-                proc_id: 0x41,
                 regs: Registers::default(),
                 mem: mem,
                 display: display,
                 page_table: page_table,
-                page_count: pages,
                 vm_size: vm_size,
-                base_addr: base_addr,
                 last_timer_tick: Instant::now(),
             })
-        }
-
-        // Codex generated: headless constructor used by tests to avoid opening a window.
-        pub fn new_headless(mem: &'a mut Arc<Mutex<SharedMemory>>) -> Result<Proc<'a>, Error> {
-            let display = DisplayWindow::new_headless().unwrap();
-            Proc::new_with_display_and_pages(mem, display, 1)
-        }
-
-        // Codex generated: headless constructor with a multi-page virtual space.
-        pub fn new_headless_with_pages(
-            mem: &'a mut Arc<Mutex<SharedMemory>>,
-            pages: u16,
-        ) -> Result<Proc<'a>, Error> {
-            let display = DisplayWindow::new_headless().unwrap();
-            Proc::new_with_display_and_pages(mem, display, pages)
         }
 
         // Codex generated: translate a virtual address into a physical address.
@@ -223,7 +177,7 @@ pub mod proc {
 
             //copy sprites into process memory
             //self.mem[0x0..0x50].copy_from_slice(&chip8_sprites);
-            let sprite_vec = chip8_sprites.to_vec();
+            let sprite_vec = CHIP8_SPRITES.to_vec();
             self.write_bytes(0x0, &sprite_vec)?;
 
             //copy program text into process memory

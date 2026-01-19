@@ -49,7 +49,6 @@ shared physical memory.
 
 ```
 Proc
-├── proc_id: u32
 ├── regs: Registers
 │   ├── V[16]  : general registers V0..VF
 │   ├── I      : index register
@@ -59,16 +58,12 @@ Proc
 ├── mem: &mut Arc<Mutex<SharedMemory>>
 ├── display: DisplayWindow
 ├── page_table: Vec<u32>   (physical bases per virtual page)
-├── page_count: u16
 ├── vm_size: u32           (virtual size in bytes)
-└── base_addr: u32         (physical base of virtual page 0, debug/compat)
 ```
 
 Key invariants:
 
 - `PC`, `I`, and `SP` are **virtual addresses** translated via the page table.
-- `base_addr` is retained only for debug/compatibility; translation uses
-  `page_table` plus `translate()` helpers.
 
 ### 3.2 SharedMemory
 
@@ -99,8 +94,8 @@ DisplayWindow
 └── key_state: u8            # compatibility alias (0xFF = none)
 ```
 
-`new_headless()` builds a display without a window; this enables tests to run
-without GUI dependencies.
+Tests construct a headless `DisplayWindow` instance directly, which enables
+opcode tests to run without GUI dependencies.
 
 ---
 
@@ -338,7 +333,7 @@ SharedMemory.phys_mem[phys]
 - **Opcode grouping by first nibble** keeps decode logic compact and readable.
 - **Macro-based field extraction** centralizes bit handling and reduces bugs.
 - **Per-process display** allows multiple concurrent Proc instances with their
-  own windows (or headless buffers).
+  own windows or test-only headless buffers.
 - **SharedMemory + page_table** is a small “virtualization” layer; it enables
   separate address spaces, and `Proc::translate` centralizes the mapping logic.
 
@@ -365,9 +360,8 @@ SharedMemory.phys_mem[phys]
    consider fragmentation/compaction.
 
 5. **Display and input abstraction**  
-   The new `new_with_display` and `new_headless` hooks are good. If you plan to
-   support other frontends (SDL, web), consider a trait or interface for
-   display/input backends.
+   If you plan to support other frontends (SDL, web), consider a trait or
+   interface for display/input backends.
 
 6. **Super-CHIP/XO-CHIP extensions**  
    The Timendus suite includes scrolling and high‑res tests. If you want to pass

@@ -13,15 +13,6 @@ pub mod display {
     const WIDTH: u32 = (LOGICAL_WIDTH * SCALE) as u32;
     const HEIGHT: u32 =(LOGICAL_HEIGHT * SCALE) as u32;
 
-    fn get_bit(byte: u8, pos: u8) -> u8 {
-        if pos == 8 {
-            return byte & 0x01;
-        } 
-        
-       return ((byte >> (8-pos)) & 0x1) as u8;
-    }
-
-
     pub struct DisplayWindow {
         pub window: Option<Window>,
         pub buf: Vec<u32>,
@@ -46,17 +37,6 @@ pub mod display {
             Ok(DisplayWindow {
                 window: Some(window),
                 buf: buf,
-                key_state: 0xFF,
-                key_down: [false; 16],
-                last_key: None,
-            })
-        }
-
-        // Codex generated: headless display for tests; keeps the buffer but skips window updates.
-        pub fn new_headless() -> Result<DisplayWindow, Error> {
-            Ok(DisplayWindow {
-                window: None,
-                buf: vec![0; (WIDTH * HEIGHT) as usize],
                 key_state: 0xFF,
                 key_down: [false; 16],
                 last_key: None,
@@ -102,14 +82,6 @@ pub mod display {
 
             // Codex generated: keep key_state for compatibility; 0xFF means "no key".
             self.key_state = self.last_key.unwrap_or(0xFF);
-        }
-
-        pub fn draw_pixel(&mut self, x_pos: u32, y_pos: u32) {
-            let x = x_pos % WIDTH;
-            let y = y_pos % HEIGHT;
-            let pos = (y * WIDTH + x) as usize;
-
-            self.buf[pos] = WHITE;
         }
 
         // Codex generated: draw_sprite XORs sprite bits and sets VF on collision.

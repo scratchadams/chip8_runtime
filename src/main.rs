@@ -5,7 +5,7 @@ mod proc;
 mod display;
 
 use shared_memory::shared_memory::SharedMemory;
-use proc::proc::{Proc, ProcessTable};
+use proc::proc::Proc;
 use std::sync::{Arc, Mutex};
 use std::thread;
 fn main() {

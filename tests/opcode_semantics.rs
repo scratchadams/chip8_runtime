@@ -1,19 +1,31 @@
 use std::sync::{Arc, Mutex};
 
-use chip8_runtime::display::display::SCALE;
+use chip8_runtime::display::display::{DisplayWindow, SCALE};
 use chip8_runtime::proc::proc::Proc;
 use chip8_runtime::shared_memory::shared_memory::SharedMemory;
+
+fn make_headless_display() -> DisplayWindow {
+    DisplayWindow {
+        window: None,
+        buf: vec![0; 64 * 32 * SCALE * SCALE],
+        key_state: 0xFF,
+        key_down: [false; 16],
+        last_key: None,
+    }
+}
 
 fn new_headless_proc() -> Proc<'static> {
     let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
     let mem_ref: &'static mut Arc<Mutex<SharedMemory>> = Box::leak(Box::new(mem));
-    Proc::new_headless(mem_ref).unwrap()
+    let display = make_headless_display();
+    Proc::new_with_display_and_pages(mem_ref, display, 1).unwrap()
 }
 
 fn new_headless_proc_with_pages(pages: u16) -> Proc<'static> {
     let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
     let mem_ref: &'static mut Arc<Mutex<SharedMemory>> = Box::leak(Box::new(mem));
-    Proc::new_headless_with_pages(mem_ref, pages).unwrap()
+    let display = make_headless_display();
+    Proc::new_with_display_and_pages(mem_ref, display, pages).unwrap()
 }
 
 fn write_opcode(proc: &mut Proc<'_>, addr: u16, opcode: u16) {
@@ -318,6 +330,7 @@ fn opcode_fx33_stores_bcd() {
         proc.read_u8(0x302).unwrap(),
     ];
     assert_eq!(data, vec![1, 3, 7]);
+    assert_eq!(proc.regs.PC, 0x202);
 }
 
 #[test]

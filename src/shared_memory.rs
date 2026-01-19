@@ -37,18 +37,28 @@ pub mod shared_memory {
                 return Err(Error::new(ErrorKind::InvalidInput, "page count must be > 0"));
             }
 
-            let mut allocated: Vec<u32> = Vec::new();
-            for (idx, used) in self.phys_bitmap.iter_mut().enumerate() {
+            // Codex generated: collect free pages first to avoid partial allocations.
+            let mut free_indices: Vec<usize> = Vec::new();
+            for (idx, used) in self.phys_bitmap.iter().enumerate() {
                 if !*used {
-                    *used = true;
-                    allocated.push((idx * PAGE_SIZE) as u32);
-                    if allocated.len() == pages as usize {
-                        return Ok(allocated);
+                    free_indices.push(idx);
+                    if free_indices.len() == pages as usize {
+                        break;
                     }
                 }
             }
 
-            Err(Error::new(ErrorKind::OutOfMemory, "insufficient free pages"))
+            if free_indices.len() < pages as usize {
+                return Err(Error::new(ErrorKind::OutOfMemory, "insufficient free pages"));
+            }
+
+            let mut allocated: Vec<u32> = Vec::with_capacity(pages as usize);
+            for idx in free_indices {
+                self.phys_bitmap[idx] = true;
+                allocated.push((idx * PAGE_SIZE) as u32);
+            }
+
+            Ok(allocated)
         }
 
 
@@ -66,17 +76,20 @@ pub mod shared_memory {
         /// the length of the write (how many bytes were written to memory)
         /// or an error value.
         /// 
-        /// Codex generated: current implementation ignores `len` and writes
-        /// all bytes from `data` starting at `addr`.
+        /// Codex generated: write clamps to data length and bounds-checks
+        /// against physical memory size.
         pub fn write(&mut self, addr: usize, data: & Vec<u8>, len: usize) -> Result<(), Error> {
             let write_len = len.min(data.len());
-            if write_len > 0x1000 {
+            if write_len > PAGE_SIZE {
                 return Err(Error::new(ErrorKind::Other, "write size must not exceed 0x1000 bytes"));
             }
 
             let end = addr
                 .checked_add(write_len)
                 .ok_or_else(|| Error::new(ErrorKind::Other, "overflow computing write range"))? as usize;
+            if end > self.phys_mem.len() {
+                return Err(Error::new(ErrorKind::InvalidInput, "write range out of bounds"));
+            }
 
             self.phys_mem[addr..end].copy_from_slice(&data[..write_len]);
 
@@ -87,9 +100,14 @@ pub mod shared_memory {
 
         // Codex generated: read clones a byte slice into a new Vec for callers.
         pub fn read(&mut self, addr: usize, len: usize) -> Result<Vec<u8>, Error> {
-            let mut data:Vec<u8> = Vec::new();
-            let end = addr + len as usize;
+            let end = addr
+                .checked_add(len)
+                .ok_or_else(|| Error::new(ErrorKind::Other, "overflow computing read range"))? as usize;
+            if end > self.phys_mem.len() {
+                return Err(Error::new(ErrorKind::InvalidInput, "read range out of bounds"));
+            }
 
+            let mut data:Vec<u8> = Vec::with_capacity(len);
             data.extend_from_slice(&self.phys_mem[addr..end]);
 
             Ok(data)

@@ -196,7 +196,6 @@ pub mod chip8_engine {
             },
             0x06 => {
                 let v_x = proc.regs.V[var_x];
-                let v_y = proc.regs.V[var_y];
 
                 let temp = proc.regs.V[var_x] / 2;
                 proc.regs.V[var_x] = temp;
@@ -379,7 +378,8 @@ pub mod chip8_engine {
                 //proc.mem[(proc.regs.I + 1) as usize] = dec % 10;
                 //dec = dec / 10;
 
-                //proc.mem[proc.regs.I as usize] = dec % 10;                
+                //proc.mem[proc.regs.I as usize] = dec % 10;
+                proc.regs.PC += 2;
             },
             0x55 => {
                 for i in 0..=var_x {
