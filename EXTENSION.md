@@ -228,9 +228,10 @@ address is translated to physical by:
      on any future stack syscalls. Return VF=1 on overflow/underflow.
 
 5. **Syscall dispatcher**
-   - Implemented: opcode routing for `0nnn` (0x0100..0x01FF) and a syscall table
-     with `register_syscall` + `dispatch_syscall`.
-   - Still needed: concrete syscall handlers and a kernel/runtime owner for them.
+   - Implemented: opcode routing for `0nnn` (0x0100..0x01FF) and a syscall table.
+   - Implemented: kernel stub that owns shared memory and the syscall registry.
+   - Still needed: concrete syscall handlers and wiring the runtime loop through
+     the kernel owner.
 
 ---
 

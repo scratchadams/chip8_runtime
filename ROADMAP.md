@@ -100,7 +100,9 @@ SYS 0x04: yield
 ### Current status
 
 - Implemented: syscall table + dispatcher for `0nnn` in 0x0100..0x01FF, with tests.
-- Remaining: kernel/runtime owner, concrete syscall IDs, and host handlers.
+- Implemented: kernel stub with shared memory + syscall registry + Proc map.
+- Remaining: wire the runtime loop to the kernel owner, define concrete syscall IDs,
+  and add host handlers for spawn/exit/yield/write.
 
 ### Milestone success
 

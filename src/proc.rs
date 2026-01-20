@@ -1,5 +1,4 @@
 pub mod proc {
-    use std::collections::HashMap;
     use std::io::Error;
     use std::fs;
     use std::mem::size_of;
@@ -7,6 +6,7 @@ pub mod proc {
     use std::time::{Duration, Instant};
 
     use crate::chip8_engine::chip8_engine::*;
+    use crate::kernel::kernel::{SyscallHandler, SyscallOutcome, SyscallTable};
     use crate::shared_memory;
     use crate::shared_memory::shared_memory::SharedMemory;
     use crate::display::display::DisplayWindow;
@@ -76,49 +76,17 @@ pub mod proc {
         }
     }
 
-    // Codex generated: syscall handlers return whether the caller should advance PC.
-    pub enum SyscallOutcome {
-        Completed,
-        Blocked,
-    }
-
-    pub type SyscallHandler = fn(&mut Proc) -> SyscallOutcome;
-
-    struct SyscallTable {
-        handlers: HashMap<u16, SyscallHandler>,
-    }
-
-    impl SyscallTable {
-        fn new() -> SyscallTable {
-            SyscallTable {
-                handlers: HashMap::new(),
-            }
-        }
-
-        fn register(&mut self, id: u16, handler: SyscallHandler) -> Result<(), Error> {
-            if !(0x0100..0x0200).contains(&id) {
-                return Err(Error::new(std::io::ErrorKind::InvalidInput, "syscall id out of range"));
-            }
-            self.handlers.insert(id, handler);
-            Ok(())
-        }
-
-        fn get(&self, id: u16) -> Option<SyscallHandler> {
-            self.handlers.get(&id).copied()
-        }
-    }
-
-    pub struct Proc<'a> {
+    pub struct Proc {
         pub regs: Registers,
-        pub mem: &'a mut Arc<Mutex<SharedMemory>>,
+        pub mem: Arc<Mutex<SharedMemory>>,
         pub display: DisplayWindow,
         pub page_table: Vec<u32>,
         pub vm_size: u32,
-        syscall_table: SyscallTable,
+        syscalls: Arc<Mutex<SyscallTable>>,
         last_timer_tick: Instant,
     }
 
-    impl<'a> Proc<'a> {
+    impl Proc {
         /// This process will return a new Proc (process) object
         /// A page of memory is mmaped to provide the virtual mapping
         /// this process will use.
@@ -126,18 +94,21 @@ pub mod proc {
         /// A new display window is created per-process and associated
         /// with the Proc object
         /// Codex generated: PC and I are virtual addresses translated through the page table.
-        pub fn new(mem: &'a mut Arc<Mutex<SharedMemory>>) -> Result<Proc<'a>, Error> {
+        pub fn new(mem: Arc<Mutex<SharedMemory>>) -> Result<Proc, Error> {
             let display = DisplayWindow::new().unwrap();
-            Proc::new_with_display_and_pages(mem, display, 1)
+            let syscalls = Arc::new(Mutex::new(SyscallTable::new()));
+            Proc::new_with_display_and_pages(mem, syscalls, display, 1)
         }
 
         // Codex generated: constructor with an explicit page count for multi-page VMs.
         pub fn new_with_display_and_pages(
-            mem: &'a mut Arc<Mutex<SharedMemory>>,
+            mem: Arc<Mutex<SharedMemory>>,
+            syscalls: Arc<Mutex<SyscallTable>>,
             display: DisplayWindow,
             pages: u16,
-        ) -> Result<Proc<'a>, Error> {
-            let page_table = mem.lock()
+        ) -> Result<Proc, Error> {
+            let page_table = mem
+                .lock()
                 .unwrap()
                 .mmap(pages)?;
             let vm_size = pages as u32 * shared_memory::shared_memory::PAGE_SIZE as u32;
@@ -147,7 +118,7 @@ pub mod proc {
                 display: display,
                 page_table: page_table,
                 vm_size: vm_size,
-                syscall_table: SyscallTable::new(),
+                syscalls: syscalls,
                 last_timer_tick: Instant::now(),
             })
         }
@@ -200,14 +171,20 @@ pub mod proc {
 
         // Codex generated: register a syscall handler in the reserved table range (0x0100..0x0200).
         pub fn register_syscall(&mut self, id: u16, handler: SyscallHandler) -> Result<(), Error> {
-            self.syscall_table.register(id, handler)
+            self.syscalls
+                .lock()
+                .unwrap()
+                .register(id, handler)
         }
 
         // Codex generated: dispatch a syscall by ID; returns Err if the ID is unregistered.
         pub fn dispatch_syscall(&mut self, id: u16) -> Result<SyscallOutcome, Error> {
-            let handler = self.syscall_table
-                .get(id)
-                .ok_or_else(|| Error::new(std::io::ErrorKind::NotFound, "unknown syscall id"))?;
+            let handler = {
+                let syscalls = self.syscalls.lock().unwrap();
+                syscalls
+                    .handler(id)
+                    .ok_or_else(|| Error::new(std::io::ErrorKind::NotFound, "unknown syscall id"))?
+            };
             Ok(handler(self))
         }
 

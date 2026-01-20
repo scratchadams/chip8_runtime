@@ -1,5 +1,6 @@
 pub mod chip8_engine {
-    use crate::proc::proc::{Proc, SyscallOutcome};
+    use crate::kernel::kernel::SyscallOutcome;
+    use crate::proc::proc::Proc;
     use rand::Rng;
     /// To handle the chip8 instruction set, we will define a handler
     /// function for each first nibble (i.e - 0x0, 0x1, 0x2, etc...)

@@ -1,7 +1,8 @@
 use std::sync::{Arc, Mutex};
 
 use chip8_runtime::display::display::{DisplayWindow, SCALE};
-use chip8_runtime::proc::proc::{Proc, SyscallOutcome};
+use chip8_runtime::kernel::kernel::{SyscallOutcome, SyscallTable};
+use chip8_runtime::proc::proc::Proc;
 use chip8_runtime::shared_memory::shared_memory::SharedMemory;
 
 fn make_headless_display() -> DisplayWindow {
@@ -14,38 +15,38 @@ fn make_headless_display() -> DisplayWindow {
     }
 }
 
-fn new_headless_proc() -> Proc<'static> {
+fn new_headless_proc() -> Proc {
     let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
-    let mem_ref: &'static mut Arc<Mutex<SharedMemory>> = Box::leak(Box::new(mem));
+    let syscalls = Arc::new(Mutex::new(SyscallTable::new()));
     let display = make_headless_display();
-    Proc::new_with_display_and_pages(mem_ref, display, 1).unwrap()
+    Proc::new_with_display_and_pages(mem, syscalls, display, 1).unwrap()
 }
 
-fn new_headless_proc_with_pages(pages: u16) -> Proc<'static> {
+fn new_headless_proc_with_pages(pages: u16) -> Proc {
     let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
-    let mem_ref: &'static mut Arc<Mutex<SharedMemory>> = Box::leak(Box::new(mem));
+    let syscalls = Arc::new(Mutex::new(SyscallTable::new()));
     let display = make_headless_display();
-    Proc::new_with_display_and_pages(mem_ref, display, pages).unwrap()
+    Proc::new_with_display_and_pages(mem, syscalls, display, pages).unwrap()
 }
 
-fn write_opcode(proc: &mut Proc<'_>, addr: u16, opcode: u16) {
+fn write_opcode(proc: &mut Proc, addr: u16, opcode: u16) {
     let hi = (opcode >> 8) as u8;
     let lo = opcode as u8;
     let data = vec![hi, lo];
     proc.write_bytes(addr as u32, &data).unwrap();
 }
 
-fn write_byte(proc: &mut Proc<'_>, addr: u16, value: u8) {
+fn write_byte(proc: &mut Proc, addr: u16, value: u8) {
     proc.write_u8(addr as u32, value).unwrap();
 }
 
-fn exec_opcode(proc: &mut Proc<'_>, opcode: u16) {
+fn exec_opcode(proc: &mut Proc, opcode: u16) {
     let pc = proc.regs.PC;
     write_opcode(proc, pc, opcode);
     proc.step();
 }
 
-fn count_on_pixels(proc: &Proc<'_>) -> usize {
+fn count_on_pixels(proc: &Proc) -> usize {
     proc.display.buf.iter().filter(|&&p| p != 0).count()
 }
 

@@ -32,6 +32,7 @@ chip8_runtime/
 │   ├── proc.rs            # Proc, Registers, and runtime loop
 │   ├── chip8_engine.rs    # opcode handlers and opcode field macros
 │   ├── display.rs         # DisplayWindow and sprite rendering
+│   ├── kernel.rs          # Kernel + syscall table (dispatch stubs)
 │   └── shared_memory.rs   # SharedMemory allocator + read/write helpers
 └── tests/
     └── opcode_semantics.rs # unit-style opcode tests (headless)
@@ -55,7 +56,7 @@ Proc
 │   ├── PC     : program counter (virtual, per-process)
 │   ├── SP     : stack pointer (virtual, per-process)
 │   ├── DT/ST  : delay/sound timers (ticked at ~60Hz in step)
-├── mem: &mut Arc<Mutex<SharedMemory>>
+├── mem: Arc<Mutex<SharedMemory>>
 ├── display: DisplayWindow
 ├── page_table: Vec<u32>   (physical bases per virtual page)
 ├── vm_size: u32           (virtual size in bytes)
@@ -96,6 +97,24 @@ DisplayWindow
 
 Tests construct a headless `DisplayWindow` instance directly, which enables
 opcode tests to run without GUI dependencies.
+
+### 3.4 Kernel (Syscall Registry + Process Owner)
+
+`Kernel` is the emerging host-side runtime owner. It centralizes syscall
+registration and is the intended place to manage Proc lifecycle in the
+extended OS model.
+
+```
+Kernel
+├── mem: Arc<Mutex<SharedMemory>>
+├── syscalls: Arc<Mutex<SyscallTable>>
+├── procs: HashMap<u32, Proc>
+└── next_pid: u32
+```
+
+`SyscallTable` enforces the reserved ID range (0x0100..0x01FF) and dispatches
+handlers by ID. Each `Proc` holds a shared reference to the syscall table so
+`0nnn` dispatch is consistent across all processes.
 
 ---
 
