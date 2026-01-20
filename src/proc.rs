@@ -17,7 +17,7 @@ pub mod proc {
         };
     }
 
-    // Codex generated: CHIP-8 font sprites are 4x5 pixels, 5 bytes per glyph (0-F).
+    // CHIP-8 font sprites are 4x5 pixels, 5 bytes per glyph (0-F).
     const CHIP8_SPRITES: [u8; 80] = [
         0xF0, 0x90, 0x90, 0x90, 0xF0, // 0
         0x20, 0x60, 0x20, 0x20, 0x70, // 1
@@ -93,14 +93,14 @@ pub mod proc {
         /// 
         /// A new display window is created per-process and associated
         /// with the Proc object
-        /// Codex generated: PC and I are virtual addresses translated through the page table.
+        /// PC and I are virtual addresses translated through the page table.
         pub fn new(mem: Arc<Mutex<SharedMemory>>) -> Result<Proc, Error> {
             let display = DisplayWindow::new().unwrap();
             let syscalls = Arc::new(Mutex::new(SyscallTable::new()));
             Proc::new_with_display_and_pages(mem, syscalls, display, 1)
         }
 
-        // Codex generated: constructor with an explicit page count for multi-page VMs.
+        // constructor with an explicit page count for multi-page VMs.
         pub fn new_with_display_and_pages(
             mem: Arc<Mutex<SharedMemory>>,
             syscalls: Arc<Mutex<SyscallTable>>,
@@ -123,7 +123,7 @@ pub mod proc {
             })
         }
 
-        // Codex generated: translate a virtual address into a physical address.
+        // translate a virtual address into a physical address.
         pub fn translate(&self, vaddr: u32) -> Result<usize, Error> {
             if vaddr >= self.vm_size {
                 return Err(Error::new(std::io::ErrorKind::Other, "virtual address out of range"));
@@ -138,7 +138,7 @@ pub mod proc {
             Ok(phys_base + offset)
         }
 
-        // Codex generated: read a single byte using virtual addressing.
+        // read a single byte using virtual addressing.
         pub fn read_u8(&mut self, vaddr: u32) -> Result<u8, Error> {
             let phys = self.translate(vaddr)?;
             Ok(self.mem
@@ -148,7 +148,7 @@ pub mod proc {
                 [0])
         }
 
-        // Codex generated: write a single byte using virtual addressing.
+        // write a single byte using virtual addressing.
         pub fn write_u8(&mut self, vaddr: u32, value: u8) -> Result<(), Error> {
             let phys = self.translate(vaddr)?;
             let data = vec![value];
@@ -158,7 +158,7 @@ pub mod proc {
                 .write(phys, &data, data.len())
         }
 
-        // Codex generated: write a byte slice across page boundaries if needed.
+        // write a byte slice across page boundaries if needed.
         pub fn write_bytes(&mut self, vaddr: u32, data: &[u8]) -> Result<(), Error> {
             for (idx, byte) in data.iter().enumerate() {
                 let addr = vaddr
@@ -169,7 +169,7 @@ pub mod proc {
             Ok(())
         }
 
-        // Codex generated: register a syscall handler in the reserved table range (0x0100..0x0200).
+        // register a syscall handler in the reserved table range (0x0100..0x0200).
         pub fn register_syscall(&mut self, id: u16, handler: SyscallHandler) -> Result<(), Error> {
             self.syscalls
                 .lock()
@@ -177,7 +177,7 @@ pub mod proc {
                 .register(id, handler)
         }
 
-        // Codex generated: dispatch a syscall by ID; returns Err if the ID is unregistered.
+        // dispatch a syscall by ID; returns Err if the ID is unregistered.
         pub fn dispatch_syscall(&mut self, id: u16) -> Result<SyscallOutcome, Error> {
             let handler = {
                 let syscalls = self.syscalls.lock().unwrap();
@@ -191,7 +191,7 @@ pub mod proc {
         /// This function loads chip8 program text from a file
         /// and loads it into the process' memory space
         /// 
-        /// Codex generated: sprites are loaded at the base of the process page,
+        /// sprites are loaded at the base of the process page,
         /// while program bytes start at 0x200 per CHIP-8 convention.
         pub fn load_program(&mut self, filename: String) -> Result<(), Error> {
             let program_text = fs::read(filename)?;
@@ -220,24 +220,24 @@ pub mod proc {
         /// The initial opcode is extracted from the instruction and used to call
         /// the various opcode handlers. The instruction value and Proc object are 
         /// passed to the matched handler to execute the instruction. 
-        /// Codex generated: the loop is intentionally tight; timers and exit
+        /// the loop is intentionally tight; timers and exit
         /// conditions are expected to be integrated externally.
         pub fn run_program(&mut self) {
-            // Codex generated: classic fetch-decode-execute loop for CHIP-8.
+            // classic fetch-decode-execute loop for CHIP-8.
             loop {
                 self.step();
             }
         }
 
-        // Codex generated: execute a single CHIP-8 instruction for test-driven stepping.
+        // execute a single CHIP-8 instruction for test-driven stepping.
         pub fn step(&mut self) {
-            // Codex generated: poll input each cycle so Ex9E/ExA1/Fx0A see live key states.
+            // poll input each cycle so Ex9E/ExA1/Fx0A see live key states.
             self.display.poll_input();
             self.tick_timers();
 
             let pc = self.regs.PC as usize;
             
-            // Codex generated: opcodes are big-endian in memory (hi byte then lo byte).
+            // opcodes are big-endian in memory (hi byte then lo byte).
             let val1 = self.read_u8(pc as u32).unwrap() as u16;
             let val1 = val1 << 8;
             let val2 = self.read_u8((pc + 1) as u32).unwrap() as u16;
@@ -300,7 +300,7 @@ pub mod proc {
             }
         }
 
-        // Codex generated: decrement DT/ST at ~60Hz based on wall-clock time.
+        // decrement DT/ST at ~60Hz based on wall-clock time.
         fn tick_timers(&mut self) {
             let tick = Duration::from_micros(1_000_000 / 60);
             let now = Instant::now();

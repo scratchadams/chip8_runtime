@@ -13,10 +13,10 @@ pub mod chip8_engine {
     /// nibble will always be extracted at the beginning of the event loop
     /// while additional variables will be extracted based on the needs of 
     /// each instruction handler.
-    /// Codex generated: each handler is responsible for advancing PC; the
+    /// each handler is responsible for advancing PC; the
     /// dispatch loop does not auto-increment.
     
-    // Codex generated: keep opcode bit extraction consistent and centralized.
+    // keep opcode bit extraction consistent and centralized.
     macro_rules! extract_nnn {
         ($value:expr) => {
             ($value & 0x0FFF) as u16
@@ -56,7 +56,7 @@ pub mod chip8_engine {
                 proc.regs.PC += 2;
             },
             0x00ee => {
-                // Codex generated: stack addresses are virtual; translate on read.
+                // stack addresses are virtual; translate on read.
                 let val1 = proc.read_u8(proc.regs.SP as u32).unwrap() as u16;
                 let val1 = val1 << 8;
 
@@ -67,7 +67,7 @@ pub mod chip8_engine {
             },
             _ => {
                 if (0x0100..0x0200).contains(&nnn) {
-                    // Codex generated: syscall range is reserved for the host dispatcher.
+                    // syscall range is reserved for the host dispatcher.
                     match proc.dispatch_syscall(nnn) {
                         Ok(SyscallOutcome::Completed) => {
                             proc.regs.PC += 2;
@@ -90,16 +90,16 @@ pub mod chip8_engine {
         proc.regs.PC = extract_nnn!(instruction);
     }
 
-    // Codex generated: stack uses virtual addresses; translation handles paging.
+    // stack uses virtual addresses; translation handles paging.
     pub fn opcode_0x2(proc: &mut Proc, instruction: u16) {
         proc.regs.SP += 2;
 
-        // Codex generated: return address is stored as two bytes (hi/lo).
+        // return address is stored as two bytes (hi/lo).
         let mut data: Vec<u8> = Vec::new();
         data.push(((proc.regs.PC + 2) >> 8) as u8);
         data.push((proc.regs.PC + 2) as u8);
         
-        // Codex generated: write via virtual addresses to respect paging.
+        // write via virtual addresses to respect paging.
         proc.write_u8(proc.regs.SP as u32, data[0]).unwrap();
         proc.write_u8((proc.regs.SP + 1) as u32, data[1]).unwrap();
 
@@ -300,7 +300,7 @@ pub mod chip8_engine {
         let y = proc.regs.V[var_y as usize] as u32;
         
         proc.regs.PC += 2;
-        // Codex generated: sprite bytes are read via virtual addresses (may cross pages).
+        // sprite bytes are read via virtual addresses (may cross pages).
         let mut sprite: Vec<u8> = Vec::with_capacity(var_z);
         for i in 0..var_z {
             let addr = (proc.regs.I + i as u16) as u32;
@@ -316,7 +316,7 @@ pub mod chip8_engine {
 
         match var_kk {
             0x9e => {
-                // Codex generated: skip if the specific key indexed by Vx is down.
+                // skip if the specific key indexed by Vx is down.
                 if proc.display.key_down[proc.regs.V[var_x] as usize] {
                     proc.regs.PC += 4;
                 } else {
@@ -324,7 +324,7 @@ pub mod chip8_engine {
                 }
             },
             0xa1 => {
-                // Codex generated: example - if Vx=0xA and key 0xA is not pressed, skip.
+                // example - if Vx=0xA and key 0xA is not pressed, skip.
                 if !proc.display.key_down[proc.regs.V[var_x] as usize] {
                     proc.regs.PC += 4;
                 } else {
@@ -342,14 +342,14 @@ pub mod chip8_engine {
         let var_x = extract_x!(instruction) as usize;
         let var_kk = extract_kk!(instruction);
 
-        // Codex generated: 0xFx** opcodes mix timers, input, and memory ops.
+        // 0xFx** opcodes mix timers, input, and memory ops.
         match var_kk {
             0x07 => {
                 proc.regs.V[var_x] = proc.regs.DT;
                 proc.regs.PC += 2;
             },
             0x0a => {
-                // Codex generated: block until any key is held; store its index in Vx.
+                // block until any key is held; store its index in Vx.
                 if let Some(key) = proc.display.last_key {
                     proc.regs.V[var_x] = key;
                     proc.regs.PC += 2;

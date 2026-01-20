@@ -13,13 +13,13 @@ fn main() {
     //Allocate system memory
     let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
 
-    // Codex generated: placeholder debug output; read_test is always empty right now.
+    // placeholder debug output; read_test is always empty right now.
     let read_test: Vec<u8> = Vec::new();
     println!("{:X?}", read_test);
 
-    // Codex generated: mem1 is an Arc clone of mem, so both threads share the same allocation.
-    // Codex generated: the Mutex enforces synchronized access to the shared memory contents.
-    // Codex generated: each thread owns its own Arc handle; the data stays shared.
+    // mem1 is an Arc clone of mem, so both threads share the same allocation.
+    // the Mutex enforces synchronized access to the shared memory contents.
+    // each thread owns its own Arc handle; the data stays shared.
     let mem1 = Arc::clone(&mem);
     let handle1 = thread::spawn(move || {
         let mut proc = Proc::new(mem1).unwrap();
@@ -33,7 +33,7 @@ fn main() {
 
     let mem2 = Arc::clone(&mem);
     let handle2 = thread::spawn(move || {
-        // Codex generated: each Proc owns its DisplayWindow; only memory is shared.
+        // each Proc owns its DisplayWindow; only memory is shared.
         let mut proc = Proc::new(mem2).unwrap();
 
         let _ = proc.load_program("/root/rust/chip8/br8kout.ch8".to_string());

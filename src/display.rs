@@ -22,7 +22,7 @@ pub mod display {
     }
 
     impl DisplayWindow {
-        // Codex generated: buffer is pre-scaled (WIDTH x HEIGHT) to avoid per-frame resize.
+        // buffer is pre-scaled (WIDTH x HEIGHT) to avoid per-frame resize.
         pub fn new() -> Result<DisplayWindow, Error> {
             let mut window = Window::new(
                 "Chip8 Process", 
@@ -44,14 +44,14 @@ pub mod display {
         }
 
         pub fn clear_screen(&mut self) {
-            // Codex generated: this clears the backing buffer; caller updates the window.
+            // this clears the backing buffer; caller updates the window.
             self.buf
                 .iter_mut()
                 .for_each(|x| *x = 0);
         }
 
-        // Codex generated: poll_input captures the current pressed state of all 16 CHIP-8 keys.
-        // Codex generated: example - if keys 0x3 and 0xA are both down, key_down[0x3] and
+        // poll_input captures the current pressed state of all 16 CHIP-8 keys.
+        // example - if keys 0x3 and 0xA are both down, key_down[0x3] and
         // key_down[0xA] are true, and last_key becomes the first one found in the scan order.
         pub fn poll_input(&mut self) {
             let mapping: [(Key, u8); 16] = [
@@ -61,7 +61,7 @@ pub mod display {
                 (Key::Z,    0xA), (Key::X,    0x0), (Key::C,    0xB), (Key::V,    0xF),
             ];
 
-            // Codex generated: last_key reflects one currently-held key (not edge-triggered).
+            // last_key reflects one currently-held key (not edge-triggered).
             self.last_key = None;
             if let Some(window) = self.window.as_mut() {
                 let _ = window.update();
@@ -80,11 +80,11 @@ pub mod display {
                 }
             }
 
-            // Codex generated: keep key_state for compatibility; 0xFF means "no key".
+            // keep key_state for compatibility; 0xFF means "no key".
             self.key_state = self.last_key.unwrap_or(0xFF);
         }
 
-        // Codex generated: draw_sprite XORs sprite bits and sets VF on collision.
+        // draw_sprite XORs sprite bits and sets VF on collision.
         pub fn draw_sprite(&mut self, regs: &mut Registers, sprite: &[u8], x_pos: u32, y_pos: u32) {
             regs.V[0xF] = 0;
 

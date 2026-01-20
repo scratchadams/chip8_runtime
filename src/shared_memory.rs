@@ -10,7 +10,7 @@ pub mod shared_memory {
     /// shared physical memory arena. Each process can request multiple pages,
     /// which may map to non-contiguous physical locations.
     /// 
-    /// Codex generated: phys_bitmap tracks availability per physical page; it
+    /// phys_bitmap tracks availability per physical page; it
     /// does not yet support freeing.
 
     pub struct SharedMemory {
@@ -31,13 +31,13 @@ pub mod shared_memory {
         /// mmap returns a list of physical page bases for a process page table.
         /// The returned pages form a contiguous virtual range, but may map to
         /// non-contiguous physical locations.
-        /// Codex generated: this allocator is first-fit and does not yet support freeing.
+        /// this allocator is first-fit and does not yet support freeing.
         pub fn mmap(&mut self, pages: u16) -> Result<Vec<u32>, Error> {
             if pages == 0 {
                 return Err(Error::new(ErrorKind::InvalidInput, "page count must be > 0"));
             }
 
-            // Codex generated: collect free pages first to avoid partial allocations.
+            // collect free pages first to avoid partial allocations.
             let mut free_indices: Vec<usize> = Vec::new();
             for (idx, used) in self.phys_bitmap.iter().enumerate() {
                 if !*used {
@@ -76,7 +76,7 @@ pub mod shared_memory {
         /// the length of the write (how many bytes were written to memory)
         /// or an error value.
         /// 
-        /// Codex generated: write clamps to data length and bounds-checks
+        /// write clamps to data length and bounds-checks
         /// against physical memory size.
         pub fn write(&mut self, addr: usize, data: & Vec<u8>, len: usize) -> Result<(), Error> {
             let write_len = len.min(data.len());
@@ -98,7 +98,7 @@ pub mod shared_memory {
             Ok(())
         }
 
-        // Codex generated: read clones a byte slice into a new Vec for callers.
+        // read clones a byte slice into a new Vec for callers.
         pub fn read(&mut self, addr: usize, len: usize) -> Result<Vec<u8>, Error> {
             let end = addr
                 .checked_add(len)

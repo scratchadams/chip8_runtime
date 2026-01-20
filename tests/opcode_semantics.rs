@@ -404,7 +404,7 @@ fn opcode_fx65_loads_registers_and_increments_i() {
 #[test]
 fn virtual_translation_spans_pages() {
     let mut proc = new_headless_proc_with_pages(2);
-    // Codex generated: verify distinct bytes across the 0x0FFF/0x1000 boundary.
+    // verify distinct bytes across the 0x0FFF/0x1000 boundary.
     proc.write_u8(0x0FFF, 0xAA).unwrap();
     proc.write_u8(0x1000, 0x55).unwrap();
 
