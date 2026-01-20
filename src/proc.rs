@@ -1,4 +1,5 @@
 pub mod proc {
+    use std::collections::HashMap;
     use std::io::Error;
     use std::fs;
     use std::mem::size_of;
@@ -75,12 +76,45 @@ pub mod proc {
         }
     }
 
+    // Codex generated: syscall handlers return whether the caller should advance PC.
+    pub enum SyscallOutcome {
+        Completed,
+        Blocked,
+    }
+
+    pub type SyscallHandler = fn(&mut Proc) -> SyscallOutcome;
+
+    struct SyscallTable {
+        handlers: HashMap<u16, SyscallHandler>,
+    }
+
+    impl SyscallTable {
+        fn new() -> SyscallTable {
+            SyscallTable {
+                handlers: HashMap::new(),
+            }
+        }
+
+        fn register(&mut self, id: u16, handler: SyscallHandler) -> Result<(), Error> {
+            if !(0x0100..0x0200).contains(&id) {
+                return Err(Error::new(std::io::ErrorKind::InvalidInput, "syscall id out of range"));
+            }
+            self.handlers.insert(id, handler);
+            Ok(())
+        }
+
+        fn get(&self, id: u16) -> Option<SyscallHandler> {
+            self.handlers.get(&id).copied()
+        }
+    }
+
     pub struct Proc<'a> {
         pub regs: Registers,
         pub mem: &'a mut Arc<Mutex<SharedMemory>>,
         pub display: DisplayWindow,
         pub page_table: Vec<u32>,
         pub vm_size: u32,
+        syscall_table: SyscallTable,
         last_timer_tick: Instant,
     }
 
@@ -113,6 +147,7 @@ pub mod proc {
                 display: display,
                 page_table: page_table,
                 vm_size: vm_size,
+                syscall_table: SyscallTable::new(),
                 last_timer_tick: Instant::now(),
             })
         }
@@ -161,6 +196,19 @@ pub mod proc {
                 self.write_u8(addr, *byte)?;
             }
             Ok(())
+        }
+
+        // Codex generated: register a syscall handler in the reserved table range (0x0100..0x0200).
+        pub fn register_syscall(&mut self, id: u16, handler: SyscallHandler) -> Result<(), Error> {
+            self.syscall_table.register(id, handler)
+        }
+
+        // Codex generated: dispatch a syscall by ID; returns Err if the ID is unregistered.
+        pub fn dispatch_syscall(&mut self, id: u16) -> Result<SyscallOutcome, Error> {
+            let handler = self.syscall_table
+                .get(id)
+                .ok_or_else(|| Error::new(std::io::ErrorKind::NotFound, "unknown syscall id"))?;
+            Ok(handler(self))
         }
 
         /// This function loads chip8 program text from a file

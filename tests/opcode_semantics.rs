@@ -1,7 +1,7 @@
 use std::sync::{Arc, Mutex};
 
 use chip8_runtime::display::display::{DisplayWindow, SCALE};
-use chip8_runtime::proc::proc::Proc;
+use chip8_runtime::proc::proc::{Proc, SyscallOutcome};
 use chip8_runtime::shared_memory::shared_memory::SharedMemory;
 
 fn make_headless_display() -> DisplayWindow {
@@ -49,6 +49,12 @@ fn count_on_pixels(proc: &Proc<'_>) -> usize {
     proc.display.buf.iter().filter(|&&p| p != 0).count()
 }
 
+fn syscall_test_handler(proc: &mut Proc) -> SyscallOutcome {
+    proc.regs.V[0] = 0xAA;
+    proc.regs.V[0xF] = 0;
+    SyscallOutcome::Completed
+}
+
 #[test]
 fn opcode_00e0_clears_screen() {
     let mut proc = new_headless_proc();
@@ -82,6 +88,34 @@ fn opcode_0nnn_is_ignored() {
     let mut proc = new_headless_proc();
     proc.regs.PC = 0x200;
     exec_opcode(&mut proc, 0x0123);
+    assert_eq!(proc.regs.PC, 0x202);
+}
+
+#[test]
+fn opcode_0nnn_dispatches_syscall_in_range() {
+    let mut proc = new_headless_proc();
+    proc.register_syscall(0x0100, syscall_test_handler).unwrap();
+    exec_opcode(&mut proc, 0x0100);
+    assert_eq!(proc.regs.V[0], 0xAA);
+    assert_eq!(proc.regs.V[0xF], 0);
+    assert_eq!(proc.regs.PC, 0x202);
+}
+
+#[test]
+fn opcode_0nnn_sets_error_for_unknown_syscall() {
+    let mut proc = new_headless_proc();
+    exec_opcode(&mut proc, 0x0101);
+    assert_eq!(proc.regs.V[0], 0x01);
+    assert_eq!(proc.regs.V[0xF], 1);
+    assert_eq!(proc.regs.PC, 0x202);
+}
+
+#[test]
+fn opcode_0nnn_does_not_shadow_cls() {
+    let mut proc = new_headless_proc();
+    proc.register_syscall(0x01E0, syscall_test_handler).unwrap();
+    exec_opcode(&mut proc, 0x01E0);
+    assert_eq!(proc.regs.V[0], 0xAA);
     assert_eq!(proc.regs.PC, 0x202);
 }
 

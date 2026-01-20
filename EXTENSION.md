@@ -27,6 +27,13 @@ OS-like behaviors.
    - Registers for small args, memory for structured data.
    - Error handling consistent across syscalls.
 
+### 1.1 Current Foundation (Implemented)
+
+- Single-level page table per Proc (`page_table` + `vm_size`).
+- Shared physical memory with a first-fit allocator (`mmap(pages)`).
+- Virtual addressing helpers: `translate()`, `read_u8`, and `write_u8`.
+- Physical read/write bounds checks to prevent out-of-range access.
+
 ---
 
 ## 2) Syscall Invocation: 0nnn (SYS table)
@@ -39,9 +46,10 @@ space.
 
 ```
 0nnn:
-  nnn is treated as a syscall ID (0x000..0xFFF)
+  nnn is treated as a syscall ID
   - 00E0 and 00EE remain CLS/RET (hard-coded)
-  - Other 0nnn values call the syscall dispatcher
+  - Only 0x0100..0x01FF (0x0100..0x0200) are routed to the syscall table
+  - All other 0nnn values remain reserved/ignored
 ```
 
 ### 2.2 Rationale
@@ -49,6 +57,12 @@ space.
 - `0nnn` is a known "escape hatch" in the classic spec.
 - It avoids collisions with standard opcodes.
 - It provides a clean, uniform entry to OS functionality.
+
+### 2.3 Current Status
+
+- Implemented: `0nnn` in the reserved range (0x0100..0x01FF) dispatches into a
+  host syscall table. Unknown IDs set `VF=1` and `V0=0x01`.
+- Not implemented: concrete syscall IDs and host handlers (spawn/exit/yield/write).
 
 ---
 
@@ -82,6 +96,13 @@ I + 5: payload...
 
 The exact frame layout is flexible; what matters is that it is documented and
 consistent.
+
+### 3.3 Addressing Above 0x0FFF
+
+Classic CHIP-8 opcodes only encode 12-bit addresses, so extended programs need
+explicit mechanisms to handle larger pointers. The syscall frame is the primary
+escape hatch: store full 16-bit (or larger) addresses in memory, and let the
+host-side syscall decode them.
 
 ---
 
@@ -194,16 +215,22 @@ address is translated to physical by:
    - Still needed: `munmap()` or free list for process teardown.
 
 2. **Proc structure**
-   - Implemented: `page_table`, `page_count`, and `vm_size`.
+   - Implemented: `page_table` and `vm_size`.
    - Still needed: explicit stack bounds (`stack_top = vm_size - 1`).
 
 3. **Memory access helpers**
    - Implemented: `translate()` plus `read_u8`/`write_u8` helpers.
-   - Still needed: centralize bounds checks and error reporting.
+   - Implemented: physical `read`/`write` bounds checks in `SharedMemory`.
+   - Still needed: unify error reporting for syscall-visible failures.
 
 4. **Stack bounds enforcement**
    - Still needed: enforce `stack_limit` and `stack_top` on call/return and
      on any future stack syscalls. Return VF=1 on overflow/underflow.
+
+5. **Syscall dispatcher**
+   - Implemented: opcode routing for `0nnn` (0x0100..0x01FF) and a syscall table
+     with `register_syscall` + `dispatch_syscall`.
+   - Still needed: concrete syscall handlers and a kernel/runtime owner for them.
 
 ---
 

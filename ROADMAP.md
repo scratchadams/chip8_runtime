@@ -30,6 +30,7 @@ Before writing new runtime features, define the interface.
    - Option A: Reserve a new opcode group (e.g., `0xF?` with special subcodes).
    - Option B: Define a TRAP opcode (e.g., `0x000F` or `0x00F0`).
    - Option C: Reuse `0x0nnn` or unused legacy opcodes for host calls.
+   - Decision: reserve `0x0100..0x01FF` for syscall dispatch (rest of 0nnn reserved).
 
 2. **Register ABI**
    - Example ABI:
@@ -48,17 +49,21 @@ Before writing new runtime features, define the interface.
 
 ### Deliverable
 
-- `EXTENSION.md` describing opcode encodings, syscall IDs, and the ABI.
+- Update `EXTENSION.md` to reflect the current runtime foundation
+  (single-level paging, translation helpers, allocator behavior).
+- Lock a syscall ABI and opcode encoding for the first syscall milestone.
 
 ---
 
-## Phase 1: Minimal Syscalls + CLI (2-4 weeks)
+## Phase 1: Syscall Dispatcher + Minimal ABI Tests (2-4 weeks)
 
-Goal: a Chip-8 CLI program that can spawn and manage other ROMs.
+Goal: syscall support with tests, before building the CLI ROM.
 
 ### Required runtime changes
 
-- Syscall dispatcher with a stable ABI.
+- Syscall dispatcher with a stable ABI (likely `0nnn`).
+- Runtime syscall registry or table (host-side mapping from ID to handler).
+- A kernel/runtime struct to own process bookkeeping (since `ProcessTable` was removed).
 - Process lifecycle:
   - `spawn(rom_name) -> pid`
   - `exit(code)`
@@ -85,23 +90,27 @@ SYS 0x04: yield
   out: none
 ```
 
-### CLI ROM
+### Validation tests
 
-- A small Chip-8 program that:
-  - lists available programs (later)
-  - spawns a selected ROM
-  - waits for completion
-  - prints status
+- Unit tests for the dispatcher:
+  - `0nnn` routes to the syscall table.
+  - ABI argument/return registers are preserved.
+  - Invalid syscall IDs set `VF` and return an error code.
+
+### Current status
+
+- Implemented: syscall table + dispatcher for `0nnn` in 0x0100..0x01FF, with tests.
+- Remaining: kernel/runtime owner, concrete syscall IDs, and host handlers.
 
 ### Milestone success
 
-- CLI can spawn another ROM and resume after it exits.
+- Syscall dispatch is stable and tested without requiring a full CLI ROM.
 
 ---
 
-## Phase 2: I/O Layer (Text Console + Input) (2-4 weeks)
+## Phase 2: CLI ROM + I/O Layer (Text Console + Input) (2-4 weeks)
 
-Goal: make the CLI practical without complex sprite rendering.
+Goal: a CLI ROM that can spawn other programs and basic text I/O.
 
 ### Options
 
@@ -122,6 +131,7 @@ SYS 0x11: read_key
 
 ### Milestone success
 
+- CLI can spawn another ROM and resume after it exits.
 - CLI can print and read user commands reliably.
 
 ---
@@ -239,6 +249,6 @@ Goal: multiple programs can run concurrently and communicate.
 
 ## Recommended Immediate Next Step
 
-1. Add `EXTENSION.md` defining the syscall ABI and opcode encoding.
-2. Implement a minimal syscall dispatcher with `spawn`, `exit`, `yield`, `write`.
-3. Create a small CLI ROM that exercises those calls.
+1. Align `EXTENSION.md` and `ROADMAP.md` with the current paging/translation model.
+2. Implement a minimal syscall dispatcher + syscall table with ABI tests.
+3. Add a kernel/runtime struct to manage Proc lifecycle and syscall routing.

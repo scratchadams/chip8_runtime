@@ -1,5 +1,5 @@
 pub mod chip8_engine {
-    use crate::proc::proc::Proc;
+    use crate::proc::proc::{Proc, SyscallOutcome};
     use rand::Rng;
     /// To handle the chip8 instruction set, we will define a handler
     /// function for each first nibble (i.e - 0x0, 0x1, 0x2, etc...)
@@ -47,14 +47,14 @@ pub mod chip8_engine {
     }
 
     pub fn opcode_0x0(proc: &mut Proc, instruction: u16) {
-        let opt = extract_kk!(instruction);
+        let nnn = extract_nnn!(instruction);
 
-        match opt {
-            0xe0 => {
+        match instruction {
+            0x00e0 => {
                 proc.display.clear_screen();
                 proc.regs.PC += 2;
             },
-            0xee => {
+            0x00ee => {
                 // Codex generated: stack addresses are virtual; translate on read.
                 let val1 = proc.read_u8(proc.regs.SP as u32).unwrap() as u16;
                 let val1 = val1 << 8;
@@ -65,7 +65,22 @@ pub mod chip8_engine {
                 proc.regs.SP -= 2;
             },
             _ => {
-                proc.regs.PC += 2;
+                if (0x0100..0x0200).contains(&nnn) {
+                    // Codex generated: syscall range is reserved for the host dispatcher.
+                    match proc.dispatch_syscall(nnn) {
+                        Ok(SyscallOutcome::Completed) => {
+                            proc.regs.PC += 2;
+                        },
+                        Ok(SyscallOutcome::Blocked) => {},
+                        Err(_) => {
+                            proc.regs.V[0xF] = 1;
+                            proc.regs.V[0] = 0x01;
+                            proc.regs.PC += 2;
+                        }
+                    }
+                } else {
+                    proc.regs.PC += 2;
+                }
             }
         }
     }
