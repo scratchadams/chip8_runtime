@@ -43,6 +43,26 @@ pub mod display {
             })
         }
 
+        // headless display for tests or non-GUI runs.
+        pub fn headless() -> DisplayWindow {
+            DisplayWindow {
+                window: None,
+                buf: vec![0; (WIDTH * HEIGHT) as usize],
+                key_state: 0xFF,
+                key_down: [false; 16],
+                last_key: None,
+            }
+        }
+
+        // build a display based on CHIP8_HEADLESS env var.
+        pub fn from_env() -> Result<DisplayWindow, Error> {
+            if std::env::var("CHIP8_HEADLESS").is_ok() {
+                Ok(DisplayWindow::headless())
+            } else {
+                DisplayWindow::new()
+            }
+        }
+
         pub fn clear_screen(&mut self) {
             // this clears the backing buffer; caller updates the window.
             self.buf

@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex};
 
 use chip8_runtime::display::display::{DisplayWindow, SCALE};
-use chip8_runtime::kernel::kernel::{SyscallOutcome, SyscallTable};
+use std::io::{Error, ErrorKind};
+
+use chip8_runtime::kernel::kernel::SyscallOutcome;
 use chip8_runtime::proc::proc::Proc;
 use chip8_runtime::shared_memory::shared_memory::SharedMemory;
 
@@ -17,16 +19,14 @@ fn make_headless_display() -> DisplayWindow {
 
 fn new_headless_proc() -> Proc {
     let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
-    let syscalls = Arc::new(Mutex::new(SyscallTable::new()));
     let display = make_headless_display();
-    Proc::new_with_display_and_pages(mem, syscalls, display, 1).unwrap()
+    Proc::new_with_display_and_pages(mem, display, 1).unwrap()
 }
 
 fn new_headless_proc_with_pages(pages: u16) -> Proc {
     let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
-    let syscalls = Arc::new(Mutex::new(SyscallTable::new()));
     let display = make_headless_display();
-    Proc::new_with_display_and_pages(mem, syscalls, display, pages).unwrap()
+    Proc::new_with_display_and_pages(mem, display, pages).unwrap()
 }
 
 fn write_opcode(proc: &mut Proc, addr: u16, opcode: u16) {
@@ -43,7 +43,16 @@ fn write_byte(proc: &mut Proc, addr: u16, value: u8) {
 fn exec_opcode(proc: &mut Proc, opcode: u16) {
     let pc = proc.regs.PC;
     write_opcode(proc, pc, opcode);
-    proc.step();
+    let _ = proc.step(|_, _| Ok(SyscallOutcome::Completed));
+}
+
+fn exec_opcode_with_dispatch<F>(proc: &mut Proc, opcode: u16, mut dispatch: F)
+where
+    F: FnMut(u16, &mut Proc) -> Result<SyscallOutcome, Error>,
+{
+    let pc = proc.regs.PC;
+    write_opcode(proc, pc, opcode);
+    let _ = proc.step(|id, proc| dispatch(id, proc));
 }
 
 fn count_on_pixels(proc: &Proc) -> usize {
@@ -71,7 +80,7 @@ fn opcode_00ee_returns_to_caller() {
     proc.regs.PC = 0x200;
     exec_opcode(&mut proc, 0x2300);
     assert_eq!(proc.regs.PC, 0x300);
-    assert_eq!(proc.regs.SP, 0xFA2);
+    assert_eq!(proc.regs.SP, 0x0FFE);
 
     let ret_hi = proc.read_u8(proc.regs.SP as u32).unwrap();
     let ret_lo = proc.read_u8((proc.regs.SP + 1) as u32).unwrap();
@@ -79,9 +88,9 @@ fn opcode_00ee_returns_to_caller() {
     assert_eq!(ret_lo, 0x02);
 
     write_opcode(&mut proc, 0x300, 0x00EE);
-    proc.step();
+    let _ = proc.step(|_, _| Ok(SyscallOutcome::Completed));
     assert_eq!(proc.regs.PC, 0x202);
-    assert_eq!(proc.regs.SP, 0xFA0);
+    assert_eq!(proc.regs.SP, 0x1000);
 }
 
 #[test]
@@ -95,8 +104,13 @@ fn opcode_0nnn_is_ignored() {
 #[test]
 fn opcode_0nnn_dispatches_syscall_in_range() {
     let mut proc = new_headless_proc();
-    proc.register_syscall(0x0100, syscall_test_handler).unwrap();
-    exec_opcode(&mut proc, 0x0100);
+    exec_opcode_with_dispatch(&mut proc, 0x0100, |id, proc| {
+        if id == 0x0100 {
+            Ok(syscall_test_handler(proc))
+        } else {
+            Err(Error::new(ErrorKind::NotFound, "unknown"))
+        }
+    });
     assert_eq!(proc.regs.V[0], 0xAA);
     assert_eq!(proc.regs.V[0xF], 0);
     assert_eq!(proc.regs.PC, 0x202);
@@ -105,7 +119,9 @@ fn opcode_0nnn_dispatches_syscall_in_range() {
 #[test]
 fn opcode_0nnn_sets_error_for_unknown_syscall() {
     let mut proc = new_headless_proc();
-    exec_opcode(&mut proc, 0x0101);
+    exec_opcode_with_dispatch(&mut proc, 0x0101, |_, _| {
+        Err(Error::new(ErrorKind::NotFound, "unknown"))
+    });
     assert_eq!(proc.regs.V[0], 0x01);
     assert_eq!(proc.regs.V[0xF], 1);
     assert_eq!(proc.regs.PC, 0x202);
@@ -114,8 +130,13 @@ fn opcode_0nnn_sets_error_for_unknown_syscall() {
 #[test]
 fn opcode_0nnn_does_not_shadow_cls() {
     let mut proc = new_headless_proc();
-    proc.register_syscall(0x01E0, syscall_test_handler).unwrap();
-    exec_opcode(&mut proc, 0x01E0);
+    exec_opcode_with_dispatch(&mut proc, 0x01E0, |id, proc| {
+        if id == 0x01E0 {
+            Ok(syscall_test_handler(proc))
+        } else {
+            Err(Error::new(ErrorKind::NotFound, "unknown"))
+        }
+    });
     assert_eq!(proc.regs.V[0], 0xAA);
     assert_eq!(proc.regs.PC, 0x202);
 }
@@ -132,7 +153,7 @@ fn opcode_2nnn_calls() {
     let mut proc = new_headless_proc();
     exec_opcode(&mut proc, 0x2345);
     assert_eq!(proc.regs.PC, 0x345);
-    assert_eq!(proc.regs.SP, 0xFA2);
+    assert_eq!(proc.regs.SP, 0x0FFE);
 }
 
 #[test]

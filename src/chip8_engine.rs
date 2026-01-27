@@ -2,6 +2,7 @@ pub mod chip8_engine {
     use crate::kernel::kernel::SyscallOutcome;
     use crate::proc::proc::Proc;
     use rand::Rng;
+    use std::io::Error;
     /// To handle the chip8 instruction set, we will define a handler
     /// function for each first nibble (i.e - 0x0, 0x1, 0x2, etc...)
     /// any nibble which has multiple instructions associated with it
@@ -47,40 +48,55 @@ pub mod chip8_engine {
         };
     }
 
-    pub fn opcode_0x0(proc: &mut Proc, instruction: u16) {
+    pub fn opcode_0x0<F>(proc: &mut Proc, instruction: u16, mut dispatch_syscall: F) -> SyscallOutcome
+    where
+        F: FnMut(u16, &mut Proc) -> Result<SyscallOutcome, Error>,
+    {
         let nnn = extract_nnn!(instruction);
 
         match instruction {
             0x00e0 => {
                 proc.display.clear_screen();
                 proc.regs.PC += 2;
+                SyscallOutcome::Completed
             },
             0x00ee => {
-                // stack addresses are virtual; translate on read.
+                // stack grows downward; SP points to top of stack.
                 let val1 = proc.read_u8(proc.regs.SP as u32).unwrap() as u16;
                 let val1 = val1 << 8;
 
                 let val2 = proc.read_u8((proc.regs.SP + 1) as u32).unwrap() as u16;
 
                 proc.regs.PC = val1 | val2;
-                proc.regs.SP -= 2;
+                proc.regs.SP = proc.regs.SP.wrapping_add(2);
+                SyscallOutcome::Completed
             },
             _ => {
                 if (0x0100..0x0200).contains(&nnn) {
                     // syscall range is reserved for the host dispatcher.
-                    match proc.dispatch_syscall(nnn) {
+                    match dispatch_syscall(nnn, proc) {
                         Ok(SyscallOutcome::Completed) => {
                             proc.regs.PC += 2;
+                            SyscallOutcome::Completed
                         },
-                        Ok(SyscallOutcome::Blocked) => {},
+                        Ok(SyscallOutcome::Yielded) => {
+                            proc.regs.PC += 2;
+                            SyscallOutcome::Yielded
+                        },
+                        Ok(SyscallOutcome::Blocked) => {
+                            proc.regs.PC += 2;
+                            SyscallOutcome::Blocked
+                        },
                         Err(_) => {
                             proc.regs.V[0xF] = 1;
                             proc.regs.V[0] = 0x01;
                             proc.regs.PC += 2;
+                            SyscallOutcome::Completed
                         }
                     }
                 } else {
                     proc.regs.PC += 2;
+                    SyscallOutcome::Completed
                 }
             }
         }
@@ -92,14 +108,13 @@ pub mod chip8_engine {
 
     // stack uses virtual addresses; translation handles paging.
     pub fn opcode_0x2(proc: &mut Proc, instruction: u16) {
-        proc.regs.SP += 2;
-
         // return address is stored as two bytes (hi/lo).
         let mut data: Vec<u8> = Vec::new();
         data.push(((proc.regs.PC + 2) >> 8) as u8);
         data.push((proc.regs.PC + 2) as u8);
         
         // write via virtual addresses to respect paging.
+        proc.regs.SP = proc.regs.SP.wrapping_sub(2);
         proc.write_u8(proc.regs.SP as u32, data[0]).unwrap();
         proc.write_u8((proc.regs.SP + 1) as u32, data[1]).unwrap();
 

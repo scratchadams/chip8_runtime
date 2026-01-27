@@ -100,9 +100,11 @@ SYS 0x04: yield
 ### Current status
 
 - Implemented: syscall table + dispatcher for `0nnn` in 0x0100..0x01FF, with tests.
-- Implemented: kernel stub with shared memory + syscall registry + Proc map.
-- Remaining: wire the runtime loop to the kernel owner, define concrete syscall IDs,
-  and add host handlers for spawn/exit/yield/write.
+- Implemented: kernel owner with cooperative scheduler, root-dir ROM resolution,
+  and base syscall registration (spawn/exit/wait/yield/write/read).
+- Implemented: syscall ABI reference (`SYSCALLS.md`) and syscall-level tests.
+- Implemented: code tour reference for Rust concepts (`CODE_TOUR.md`).
+- Remaining: build the CLI ROM to exercise I/O and spawn.
 
 ### Milestone success
 

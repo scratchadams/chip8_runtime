@@ -27,12 +27,12 @@ the shared memory allocator.
 ```
 chip8_runtime/
 ├── src/
-│   ├── main.rs            # binary entrypoint, spawns Proc threads
+│   ├── main.rs            # binary entrypoint, builds Kernel and runs scheduler
 │   ├── lib.rs             # exports modules for tests/integration use
-│   ├── proc.rs            # Proc, Registers, and runtime loop
+│   ├── proc.rs            # Proc, Registers, and single-step execution
 │   ├── chip8_engine.rs    # opcode handlers and opcode field macros
 │   ├── display.rs         # DisplayWindow and sprite rendering
-│   ├── kernel.rs          # Kernel + syscall table (dispatch stubs)
+│   ├── kernel.rs          # Kernel + syscall table + scheduler + syscalls
 │   └── shared_memory.rs   # SharedMemory allocator + read/write helpers
 └── tests/
     └── opcode_semantics.rs # unit-style opcode tests (headless)
@@ -65,6 +65,7 @@ Proc
 Key invariants:
 
 - `PC`, `I`, and `SP` are **virtual addresses** translated via the page table.
+- The stack grows downward from the top of the virtual address space.
 
 ### 3.2 SharedMemory
 
@@ -96,53 +97,57 @@ DisplayWindow
 ```
 
 Tests construct a headless `DisplayWindow` instance directly, which enables
-opcode tests to run without GUI dependencies.
+opcode tests to run without GUI dependencies. The runtime also checks the
+`CHIP8_HEADLESS` environment variable to create headless displays for syscalls
+and CLI runs.
 
 ### 3.4 Kernel (Syscall Registry + Process Owner)
 
-`Kernel` is the emerging host-side runtime owner. It centralizes syscall
-registration and is the intended place to manage Proc lifecycle in the
-extended OS model.
+`Kernel` is the host-side runtime owner. It centralizes syscall registration,
+process state, input buffering, and cooperative scheduling in the extended OS
+model.
 
 ```
 Kernel
 ├── mem: Arc<Mutex<SharedMemory>>
-├── syscalls: Arc<Mutex<SyscallTable>>
-├── procs: HashMap<u32, Proc>
+├── syscalls: SyscallTable
+├── procs: HashMap<u32, ProcEntry>
 └── next_pid: u32
 ```
 
 `SyscallTable` enforces the reserved ID range (0x0100..0x01FF) and dispatches
-handlers by ID. Each `Proc` holds a shared reference to the syscall table so
-`0nnn` dispatch is consistent across all processes.
+handlers by ID. The kernel routes `0nnn` through this table and handles
+blocking/yield semantics in the scheduler.
 
 ---
 
 ## 4) Execution Flow
 
-### 4.1 Main Thread and Proc Spawning
-
-`src/main.rs` shows the current usage pattern: a shared memory arena is created
-and multiple threads each spawn a `Proc` with its own display. Each thread loads
-a program and calls `run_program()` in an infinite loop.
+### 4.1 Main Thread and Kernel Boot
 
 ```
-main() ──> SharedMemory::new() ──┐
-                                ├─ spawn thread ─> Proc::new() ─> load_program() ─> run_program()
-                                └─ spawn thread ─> Proc::new() ─> load_program() ─> run_program()
+main()
+  ├─ SharedMemory::new()
+  ├─ Kernel::new(root_dir)
+  ├─ Kernel::register_base_syscalls()
+  ├─ Kernel::spawn_proc_from_name(..) for each ROM
+  └─ Kernel::run()  // cooperative scheduler
 ```
 
-Important: the ROM paths are currently hard-coded and should be made
-configurable for real usage.
+The binary expects a root directory and one or more ROM names to run. ROM paths
+are resolved relative to the root and constrained to that directory tree.
 
 ### 4.2 Fetch-Decode-Execute Loop
 
-`Proc::run_program()` repeatedly calls `step()`. The step function:
+The kernel repeatedly calls `Proc::step()` in a cooperative loop. The step
+function:
 
 1. Polls input (`DisplayWindow::poll_input`).
 2. Fetches two bytes at virtual `PC` using `Proc::read_u8` (translation).
 3. Combines them into a 16-bit instruction (big-endian).
 4. Extracts the opcode (top nibble) and dispatches to the correct handler.
+5. When `0nnn` is in the syscall range, the dispatcher calls back into the
+   kernel to resolve the syscall ID and return a `SyscallOutcome`.
 
 ```
 loop:
@@ -153,7 +158,8 @@ loop:
 ```
 
 Each handler is responsible for **advancing PC**. The dispatcher does not
-auto-increment.
+auto-increment. Syscalls advance PC before yielding/blocking so the next step
+continues at the following instruction.
 
 ---
 

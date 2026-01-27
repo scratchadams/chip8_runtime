@@ -11,6 +11,8 @@ Chip-8 runtime so that programs can behave like a small OS. It focuses on:
 The goal is to keep classic Chip-8 compatibility, while enabling richer,
 OS-like behaviors.
 
+For the current syscall ABI and concrete frame examples, see `SYSCALLS.md`.
+
 ---
 
 ## 1) Guiding Goals
@@ -62,7 +64,19 @@ space.
 
 - Implemented: `0nnn` in the reserved range (0x0100..0x01FF) dispatches into a
   host syscall table. Unknown IDs set `VF=1` and `V0=0x01`.
-- Not implemented: concrete syscall IDs and host handlers (spawn/exit/yield/write).
+- Implemented: base syscall IDs and handlers (spawn/exit/wait/yield/write/read)
+  registered via the kernel at startup.
+
+### 2.4 Base Syscall IDs (Current)
+
+```
+0x0101 = spawn
+0x0102 = exit
+0x0103 = wait
+0x0104 = yield
+0x0110 = write
+0x0111 = read
+```
 
 ---
 
@@ -83,15 +97,15 @@ Use `I` as a pointer to a **syscall frame** for larger values or buffers.
 This keeps the register ABI small but still allows 16-bit and variable-sized
 arguments.
 
-#### Example frame layout (recommended)
+#### Frame layout (implemented)
 
 ```
-I + 0: frame length (bytes)
+I + 0: frame length (bytes, including this length byte)
 I + 1: arg0_hi
 I + 2: arg0_lo
 I + 3: arg1_hi
 I + 4: arg1_lo
-I + 5: payload...
+I + 5: payload / additional args...
 ```
 
 The exact frame layout is flexible; what matters is that it is documented and
@@ -170,11 +184,11 @@ instruction set simple.
 
 ### 4.3 Stack Direction
 
-Recommended convention for extended stacks:
+Implemented convention for extended stacks:
 
 ```
 Stack grows downward
-SP points to the next free byte below the top
+SP points to the top of the stack (last written byte)
 ```
 
 This avoids collisions with code/data and allows a clean “top-of-virtual-space”
@@ -216,7 +230,8 @@ address is translated to physical by:
 
 2. **Proc structure**
    - Implemented: `page_table` and `vm_size`.
-   - Still needed: explicit stack bounds (`stack_top = vm_size - 1`).
+   - Implemented: SP initializes at the top of virtual memory.
+   - Still needed: explicit stack bounds enforcement (`stack_bottom`, `stack_top`).
 
 3. **Memory access helpers**
    - Implemented: `translate()` plus `read_u8`/`write_u8` helpers.
@@ -229,9 +244,8 @@ address is translated to physical by:
 
 5. **Syscall dispatcher**
    - Implemented: opcode routing for `0nnn` (0x0100..0x01FF) and a syscall table.
-   - Implemented: kernel stub that owns shared memory and the syscall registry.
-   - Still needed: concrete syscall handlers and wiring the runtime loop through
-     the kernel owner.
+   - Implemented: kernel owner with cooperative scheduler and base syscalls.
+   - Still needed: additional syscalls (filesystem, IPC) and richer error codes.
 
 ---
 
@@ -279,10 +293,11 @@ Suggested error codes:
 ```
 0x01 = invalid syscall ID
 0x02 = invalid argument
-0x03 = stack overflow
-0x04 = stack underflow
-0x05 = invalid address
-0x06 = permission denied
+0x03 = I/O failure
+0x04 = stack overflow
+0x05 = stack underflow
+0x06 = invalid address
+0x07 = permission denied
 ```
 
 ---
@@ -308,6 +323,5 @@ The approach minimizes compatibility risk and provides a clear path toward
 OS-like Chip-8 programs (CLI, filesystem, process control) without rewriting
 the emulator core.
 
-If you want, the next step is to formalize the syscall IDs and implement a
-minimal dispatcher in `chip8_engine.rs` that recognizes `0nnn` and routes to
-host-side handlers.
+If you want, the next step is to formalize the syscall IDs in a shared header
+and expand the syscall surface (filesystem, IPC) with tests.

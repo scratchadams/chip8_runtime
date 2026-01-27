@@ -6,7 +6,7 @@ pub mod proc {
     use std::time::{Duration, Instant};
 
     use crate::chip8_engine::chip8_engine::*;
-    use crate::kernel::kernel::{SyscallHandler, SyscallOutcome, SyscallTable};
+    use crate::kernel::kernel::SyscallOutcome;
     use crate::shared_memory;
     use crate::shared_memory::shared_memory::SharedMemory;
     use crate::display::display::DisplayWindow;
@@ -50,31 +50,18 @@ pub mod proc {
 
     impl Default for Registers {
         fn default() -> Registers {
-            Registers { 
+            Registers {
                 I: 0,
                 V: [0; 16],
                 DT: 0,
                 ST: 0,
-                SP: 0xfa0,
-                PC: 0x200
+                SP: 0,
+                PC: 0x200,
             }
         }
     }
 
-    impl Registers {
-
-        pub fn reg_state(&self) {
-            println!("PC - {:x}", self.PC);
-            println!("SP - {:x}", self.SP);
-            println!("ST - {:x}", self.ST);
-            println!("DT - {:x}", self.DT);
-            println!("I  - {:x}", self.I);
-        
-            for i in 0..16 {
-                println!("V[{}] - {:x}", i, self.V[i]);
-            }
-        }
-    }
+    impl Registers {}
 
     pub struct Proc {
         pub regs: Registers,
@@ -82,28 +69,13 @@ pub mod proc {
         pub display: DisplayWindow,
         pub page_table: Vec<u32>,
         pub vm_size: u32,
-        syscalls: Arc<Mutex<SyscallTable>>,
         last_timer_tick: Instant,
     }
 
     impl Proc {
-        /// This process will return a new Proc (process) object
-        /// A page of memory is mmaped to provide the virtual mapping
-        /// this process will use.
-        /// 
-        /// A new display window is created per-process and associated
-        /// with the Proc object
-        /// PC and I are virtual addresses translated through the page table.
-        pub fn new(mem: Arc<Mutex<SharedMemory>>) -> Result<Proc, Error> {
-            let display = DisplayWindow::new().unwrap();
-            let syscalls = Arc::new(Mutex::new(SyscallTable::new()));
-            Proc::new_with_display_and_pages(mem, syscalls, display, 1)
-        }
-
         // constructor with an explicit page count for multi-page VMs.
         pub fn new_with_display_and_pages(
             mem: Arc<Mutex<SharedMemory>>,
-            syscalls: Arc<Mutex<SyscallTable>>,
             display: DisplayWindow,
             pages: u16,
         ) -> Result<Proc, Error> {
@@ -112,13 +84,14 @@ pub mod proc {
                 .unwrap()
                 .mmap(pages)?;
             let vm_size = pages as u32 * shared_memory::shared_memory::PAGE_SIZE as u32;
+            let mut regs = Registers::default();
+            regs.SP = vm_size.min(u16::MAX as u32) as u16;
             Ok(Proc {
-                regs: Registers::default(),
+                regs: regs,
                 mem: mem,
                 display: display,
                 page_table: page_table,
                 vm_size: vm_size,
-                syscalls: syscalls,
                 last_timer_tick: Instant::now(),
             })
         }
@@ -169,23 +142,23 @@ pub mod proc {
             Ok(())
         }
 
-        // register a syscall handler in the reserved table range (0x0100..0x0200).
-        pub fn register_syscall(&mut self, id: u16, handler: SyscallHandler) -> Result<(), Error> {
-            self.syscalls
-                .lock()
-                .unwrap()
-                .register(id, handler)
+        // read a byte slice across page boundaries if needed.
+        pub fn read_bytes(&mut self, vaddr: u32, len: usize) -> Result<Vec<u8>, Error> {
+            let mut data = Vec::with_capacity(len);
+            for idx in 0..len {
+                let addr = vaddr
+                    .checked_add(idx as u32)
+                    .ok_or_else(|| Error::new(std::io::ErrorKind::Other, "overflow computing read address"))?;
+                data.push(self.read_u8(addr)?);
+            }
+            Ok(data)
         }
 
-        // dispatch a syscall by ID; returns Err if the ID is unregistered.
-        pub fn dispatch_syscall(&mut self, id: u16) -> Result<SyscallOutcome, Error> {
-            let handler = {
-                let syscalls = self.syscalls.lock().unwrap();
-                syscalls
-                    .handler(id)
-                    .ok_or_else(|| Error::new(std::io::ErrorKind::NotFound, "unknown syscall id"))?
-            };
-            Ok(handler(self))
+        // read a 16-bit big-endian value using virtual addressing.
+        pub fn read_u16(&mut self, vaddr: u32) -> Result<u16, Error> {
+            let hi = self.read_u8(vaddr)? as u16;
+            let lo = self.read_u8(vaddr + 1)? as u16;
+            Ok((hi << 8) | lo)
         }
 
         /// This function loads chip8 program text from a file
@@ -222,15 +195,11 @@ pub mod proc {
         /// passed to the matched handler to execute the instruction. 
         /// the loop is intentionally tight; timers and exit
         /// conditions are expected to be integrated externally.
-        pub fn run_program(&mut self) {
-            // classic fetch-decode-execute loop for CHIP-8.
-            loop {
-                self.step();
-            }
-        }
-
         // execute a single CHIP-8 instruction for test-driven stepping.
-        pub fn step(&mut self) {
+        pub fn step<F>(&mut self, mut dispatch_syscall: F) -> SyscallOutcome
+        where
+            F: FnMut(u16, &mut Proc) -> Result<SyscallOutcome, Error>,
+        {
             // poll input each cycle so Ex9E/ExA1/Fx0A see live key states.
             self.display.poll_input();
             self.tick_timers();
@@ -247,7 +216,7 @@ pub mod proc {
 
             match opcode {
                 0x0 => {
-                    opcode_0x0(self, instruction);
+                    return opcode_0x0(self, instruction, &mut dispatch_syscall);
                 },
                 0x1 => {
                     opcode_0x1(self, instruction);
@@ -298,6 +267,7 @@ pub mod proc {
                     panic!("Unknown opcode: {:X}", opcode);
                 }
             }
+            SyscallOutcome::Completed
         }
 
         // decrement DT/ST at ~60Hz based on wall-clock time.
