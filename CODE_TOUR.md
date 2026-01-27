@@ -324,6 +324,163 @@ This matches the runtime stack: memory -> process -> instructions -> OS layer.
 
 ---
 
-If you want, I can expand this with an annotated walkthrough of a full syscall
-from Chip-8 instruction to kernel handler to scheduler resume. It would be a
-single end-to-end trace with stack/memory/register snapshots.
+## 15) End-to-End Syscall Walkthrough (Annotated Trace)
+
+This is a single, concrete walkthrough of a syscall from the moment a Chip-8
+program executes the instruction to the moment the scheduler resumes the next
+instruction. We'll use **`SYS write` (0x0110)** because it exercises the syscall
+frame, memory reads, and scheduler flow without blocking.
+
+Scenario: a program wants to print "hello".
+
+### 15.1 Initial State (Before the Syscall)
+
+Assume a 1-page VM (4KB). The program has placed the string at `0x0320` and a
+syscall frame at `0x0300`. Registers and memory look like this:
+
+Registers:
+```
+PC = 0x0200   ; next instruction
+I  = 0x0300   ; syscall frame pointer
+V0 = 0x00     ; unused before call
+VF = 0x00     ; clear (no error)
+SP = 0x1000   ; stack top (downward-growing)
+```
+
+Memory (virtual addresses shown):
+```
+0x0300: 0x05        ; frame length = 1 + (2 args * 2 bytes)
+0x0301: 0x03 0x20   ; arg0 = 0x0320 (buffer pointer)
+0x0303: 0x00 0x05   ; arg1 = 5      (length)
+
+0x0320: 0x68 0x65 0x6C 0x6C 0x6F  ; "hello"
+```
+
+Instruction at PC:
+```
+0x0200: 0x0110  ; SYS write
+```
+
+### 15.2 Fetch → Decode → Dispatch
+
+The kernel calls:
+```
+proc.step(|id, proc| kernel.dispatch_syscall(pid, proc, id))
+```
+
+Inside `Proc::step`:
+1. Polls input, ticks timers.
+2. Reads two bytes from virtual memory at `PC` (0x0200).
+3. Builds the instruction `0x0110`.
+4. Extracts opcode nibble `0x0`.
+5. Calls `opcode_0x0` with the dispatcher closure.
+
+In `opcode_0x0`:
+- `nnn = 0x110`
+- It's in `0x0100..0x01FF`, so it invokes the dispatcher:
+  ```
+  dispatch_syscall(0x0110, proc)
+  ```
+
+### 15.3 Kernel Dispatch
+
+`Kernel::dispatch_syscall(pid, proc, id)`:
+1. Looks up the handler in the syscall table:
+   - `0x0110` → `sys_write`
+2. Calls the handler:
+   ```
+   sys_write(kernel, pid, proc)
+   ```
+
+### 15.4 Syscall Handler Reads the Frame
+
+`sys_write` resolves its arguments using the syscall frame:
+
+```
+arg0 = Kernel::syscall_arg(proc, 0)
+arg1 = Kernel::syscall_arg(proc, 1)
+```
+
+`Kernel::syscall_arg`:
+- Reads `I` from the proc (`0x0300`).
+- Reads `frame_len` at `I + 0` (`0x05`).
+- Calculates the argument offset:
+  - arg0 → offset 1
+  - arg1 → offset 3
+- Reads 16-bit big-endian values:
+  - arg0 = 0x0320
+  - arg1 = 0x0005
+
+Then `sys_write` reads the buffer from proc memory:
+```
+proc.read_bytes(0x0320, 5) -> [0x68,0x65,0x6C,0x6C,0x6F]
+```
+
+### 15.5 Host I/O Side Effects
+
+The handler writes the bytes to stdout:
+```
+stdout.write_all(b"hello")
+```
+
+On success it sets:
+```
+V0 = 5    ; bytes written (low 8 bits)
+VF = 0    ; no error
+```
+
+It returns:
+```
+SyscallOutcome::Completed
+```
+
+### 15.6 PC Advancement + Scheduler Result
+
+Back in `opcode_0x0`:
+- Because the syscall completed, it advances:
+  ```
+  PC += 2
+  ```
+Now:
+```
+PC = 0x0202
+```
+
+`Proc::step` returns `SyscallOutcome::Completed` to the kernel.
+
+The kernel:
+- Applies any pending state transitions (none here).
+- Keeps the process runnable.
+- Moves on to the next process or the next instruction, depending on the scheduler.
+
+### 15.7 Final State (After the Syscall)
+
+Registers:
+```
+PC = 0x0202   ; advanced to next instruction
+I  = 0x0300   ; unchanged
+V0 = 0x05     ; bytes written
+VF = 0x00     ; success
+SP = 0x1000   ; unchanged
+```
+
+Memory:
+```
+frame + buffer unchanged
+```
+
+Console output:
+```
+hello
+```
+
+### 15.8 Notes on Blocking Syscalls
+
+If this had been `SYS read (0x0111)` and no input was available:
+- The handler would return `SyscallOutcome::Blocked`.
+- The dispatcher would still advance `PC` by 2.
+- The kernel would mark the proc as `Blocked` and switch to another runnable proc.
+- When input arrives, the kernel writes into the buffer and resumes the proc,
+  which continues **after** the syscall instruction (at the already-advanced PC).
+
+This is why the syscall instruction is not re-executed after unblocking.
