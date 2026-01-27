@@ -1,11 +1,13 @@
 pub mod kernel {
     use std::collections::{HashMap, VecDeque};
-    use std::io::{self, Error, ErrorKind, Write};
+    use std::io::{self, Error, ErrorKind, Read, Write};
     use std::path::{Path, PathBuf};
     use std::sync::{Arc, Mutex};
+    use std::thread;
+    use std::time::Duration;
 
     use crate::display::display::DisplayWindow;
-    use crate::proc::proc::Proc;
+    use crate::proc::proc::{InputMode, Proc};
     use crate::shared_memory::shared_memory::SharedMemory;
 
     const SYS_SPAWN: u16 = 0x0101;
@@ -14,6 +16,7 @@ pub mod kernel {
     const SYS_YIELD: u16 = 0x0104;
     const SYS_WRITE: u16 = 0x0110;
     const SYS_READ: u16 = 0x0111;
+    const SYS_INPUT_MODE: u16 = 0x0112;
 
     const ERR_INVALID: u8 = 0x02;
     const ERR_IO: u8 = 0x03;
@@ -70,7 +73,7 @@ pub mod kernel {
     #[derive(Copy, Clone, Debug, PartialEq, Eq)]
     enum WaitTarget {
         Pid(u32),
-        Read { buf: u16, len: u16 },
+        Read { buf: u16, len: u16, mode: InputMode },
     }
 
     struct ProcEntry {
@@ -117,6 +120,7 @@ pub mod kernel {
             self.register_syscall(SYS_YIELD, sys_yield)?;
             self.register_syscall(SYS_WRITE, sys_write)?;
             self.register_syscall(SYS_READ, sys_read)?;
+            self.register_syscall(SYS_INPUT_MODE, sys_input_mode)?;
             Ok(())
         }
 
@@ -240,8 +244,18 @@ pub mod kernel {
                     continue;
                 }
 
-                if self.any_blocked_on_read() {
-                    self.blocking_read_from_stdin()?;
+                if self.any_blocked_on_read_line() {
+                    self.blocking_read_line_from_stdin()?;
+                    continue;
+                }
+
+                if self.any_blocked_on_read_byte() {
+                    self.blocking_read_byte_from_stdin()?;
+                    continue;
+                }
+
+                if self.any_blocked() {
+                    thread::sleep(Duration::from_millis(1));
                     continue;
                 }
 
@@ -310,9 +324,22 @@ pub mod kernel {
                 .unwrap_or(false)
         }
 
-        fn any_blocked_on_read(&self) -> bool {
+        fn any_blocked(&self) -> bool {
+            self.procs
+                .values()
+                .any(|entry| entry.state == ProcState::Blocked)
+        }
+
+        fn any_blocked_on_read_line(&self) -> bool {
             self.procs.values().any(|entry| match entry.waiting_for {
-                Some(WaitTarget::Read { .. }) => true,
+                Some(WaitTarget::Read { mode: InputMode::Line, .. }) => true,
+                _ => false,
+            })
+        }
+
+        fn any_blocked_on_read_byte(&self) -> bool {
+            self.procs.values().any(|entry| match entry.waiting_for {
+                Some(WaitTarget::Read { mode: InputMode::Byte, .. }) => true,
                 _ => false,
             })
         }
@@ -338,32 +365,57 @@ pub mod kernel {
                 return;
             }
 
-            for entry in self.procs.values_mut() {
+            let (procs, input) = (&mut self.procs, &mut self.input);
+
+            // line-mode readers get priority and only unblock when a newline is present.
+            for entry in procs.values_mut() {
                 if entry.state != ProcState::Blocked {
                     continue;
                 }
-                let Some(WaitTarget::Read { buf, len }) = entry.waiting_for else {
+                let Some(WaitTarget::Read { buf, len, mode: InputMode::Line }) = entry.waiting_for else {
                     continue;
                 };
-                if self.input.is_empty() {
+                let Some(newline_idx) = Self::find_newline_in(input) else {
+                    continue;
+                };
+                let count = (len as usize).min(newline_idx + 1);
+                let data = Self::pop_input(input, count);
+                if entry.proc.write_bytes(buf as u32, &data).is_err() {
+                    entry.proc.regs.V[0] = ERR_INVALID;
+                    entry.proc.regs.V[0xF] = 1;
+                } else {
+                    entry.proc.regs.V[0] = count.min(0xFF) as u8;
+                    entry.proc.regs.V[0xF] = 0;
+                }
+                entry.state = ProcState::Running;
+                entry.waiting_for = None;
+            }
+
+            for entry in procs.values_mut() {
+                if entry.state != ProcState::Blocked {
+                    continue;
+                }
+                let Some(WaitTarget::Read { buf, len, mode: InputMode::Byte }) = entry.waiting_for else {
+                    continue;
+                };
+                if input.is_empty() {
                     break;
                 }
-                let count = (len as usize).min(self.input.len());
-                let mut data = Vec::with_capacity(count);
-                for _ in 0..count {
-                    if let Some(byte) = self.input.pop_front() {
-                        data.push(byte);
-                    }
+                let count = (len as usize).min(input.len());
+                let data = Self::pop_input(input, count);
+                if entry.proc.write_bytes(buf as u32, &data).is_err() {
+                    entry.proc.regs.V[0] = ERR_INVALID;
+                    entry.proc.regs.V[0xF] = 1;
+                } else {
+                    entry.proc.regs.V[0] = count.min(0xFF) as u8;
+                    entry.proc.regs.V[0xF] = 0;
                 }
-                let _ = entry.proc.write_bytes(buf as u32, &data);
-                entry.proc.regs.V[0] = count.min(0xFF) as u8;
-                entry.proc.regs.V[0xF] = 0;
                 entry.state = ProcState::Running;
                 entry.waiting_for = None;
             }
         }
 
-        fn blocking_read_from_stdin(&mut self) -> Result<(), Error> {
+        fn blocking_read_line_from_stdin(&mut self) -> Result<(), Error> {
             let mut buf = String::new();
             let bytes = io::stdin().read_line(&mut buf)?;
             if bytes == 0 {
@@ -371,6 +423,32 @@ pub mod kernel {
             }
             self.push_input(buf.as_bytes());
             Ok(())
+        }
+
+        fn blocking_read_byte_from_stdin(&mut self) -> Result<(), Error> {
+            let mut buf = [0u8; 1];
+            let bytes = io::stdin().read(&mut buf)?;
+            if bytes == 0 {
+                return Ok(());
+            }
+            self.push_input(&buf[..bytes]);
+            Ok(())
+        }
+
+        fn find_newline_in(input: &VecDeque<u8>) -> Option<usize> {
+            input.iter().position(|&b| b == b'\n')
+        }
+
+        fn pop_input(input: &mut VecDeque<u8>, count: usize) -> Vec<u8> {
+            let mut data = Vec::with_capacity(count);
+            for _ in 0..count {
+                if let Some(byte) = input.pop_front() {
+                    data.push(byte);
+                } else {
+                    break;
+                }
+            }
+            data
         }
 
         fn resolve_rom_path(&self, name: &str) -> Result<PathBuf, Error> {
@@ -548,22 +626,65 @@ pub mod kernel {
             }
         };
 
-        if kernel.input.is_empty() {
-            kernel
-                .pending_block
-                .insert(pid, WaitTarget::Read { buf, len });
-            return SyscallOutcome::Blocked;
-        }
+        let mode = proc.input_mode;
 
-        let count = (len as usize).min(kernel.input.len());
-        let mut data = Vec::with_capacity(count);
-        for _ in 0..count {
-            if let Some(byte) = kernel.input.pop_front() {
-                data.push(byte);
+        match mode {
+            InputMode::Line => {
+                let Some(newline_idx) = Kernel::find_newline_in(&kernel.input) else {
+                    kernel
+                        .pending_block
+                        .insert(pid, WaitTarget::Read { buf, len, mode });
+                    return SyscallOutcome::Blocked;
+                };
+                let count = (len as usize).min(newline_idx + 1);
+                let data = Kernel::pop_input(&mut kernel.input, count);
+                if proc.write_bytes(buf as u32, &data).is_err() {
+                    proc.regs.V[0] = ERR_INVALID;
+                    proc.regs.V[0xF] = 1;
+                } else {
+                    proc.regs.V[0] = count.min(0xFF) as u8;
+                    proc.regs.V[0xF] = 0;
+                }
+                SyscallOutcome::Completed
+            }
+            InputMode::Byte => {
+                if kernel.input.is_empty() {
+                    kernel
+                        .pending_block
+                        .insert(pid, WaitTarget::Read { buf, len, mode });
+                    return SyscallOutcome::Blocked;
+                }
+                let count = (len as usize).min(kernel.input.len());
+                let data = Kernel::pop_input(&mut kernel.input, count);
+                if proc.write_bytes(buf as u32, &data).is_err() {
+                    proc.regs.V[0] = ERR_INVALID;
+                    proc.regs.V[0xF] = 1;
+                } else {
+                    proc.regs.V[0] = count.min(0xFF) as u8;
+                    proc.regs.V[0xF] = 0;
+                }
+                SyscallOutcome::Completed
             }
         }
-        let _ = proc.write_bytes(buf as u32, &data);
-        proc.regs.V[0] = count.min(0xFF) as u8;
+    }
+
+    fn sys_input_mode(_kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let mode = match Kernel::syscall_arg(proc, 0) {
+            Ok(0) => InputMode::Line,
+            Ok(1) => InputMode::Byte,
+            Ok(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        proc.input_mode = mode;
         proc.regs.V[0xF] = 0;
         SyscallOutcome::Completed
     }

@@ -54,6 +54,12 @@ fn write_frame(proc: &mut Proc, base: u16, args: &[u16]) {
     proc.write_bytes(base as u32, &data).unwrap();
 }
 
+fn set_input_mode(proc: &mut Proc, mode: u16) {
+    write_frame(proc, 0x360, &[mode]);
+    proc.regs.I = 0x360;
+    write_opcode(proc, proc.regs.PC, 0x0112);
+}
+
 #[test]
 fn sys_write_sets_v0_and_vf() {
     set_headless();
@@ -88,9 +94,15 @@ fn sys_read_copies_input() {
 
     {
         let proc = kernel.proc_mut(pid).unwrap();
+        set_input_mode(proc, 1);
+    }
+    let _ = kernel.step_proc(pid).unwrap();
+
+    {
+        let proc = kernel.proc_mut(pid).unwrap();
         write_frame(proc, 0x300, &[0x0340, 2]);
         proc.regs.I = 0x300;
-        write_opcode(proc, 0x200, 0x0111);
+        write_opcode(proc, proc.regs.PC, 0x0111);
     }
 
     kernel.push_input(b"ok");
@@ -102,6 +114,66 @@ fn sys_read_copies_input() {
     assert_eq!(data, b"ok");
     assert_eq!(proc.regs.V[0], 2);
     assert_eq!(proc.regs.V[0xF], 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn sys_read_line_blocks_until_newline() {
+    set_headless();
+    let root = temp_root("read_line");
+    let mut kernel = make_kernel(&root);
+    let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
+
+    {
+        let proc = kernel.proc_mut(pid).unwrap();
+        write_frame(proc, 0x300, &[0x0340, 4]);
+        proc.regs.I = 0x300;
+        write_opcode(proc, proc.regs.PC, 0x0111);
+    }
+
+    kernel.push_input(b"hi");
+    let outcome = kernel.step_proc(pid).unwrap();
+    assert_eq!(outcome, SyscallOutcome::Blocked);
+    assert_eq!(kernel.proc_state(pid), Some(ProcState::Blocked));
+
+    kernel.push_input(b"\n");
+    assert_eq!(kernel.proc_state(pid), Some(ProcState::Running));
+    let proc = kernel.proc_mut(pid).unwrap();
+    let data = proc.read_bytes(0x340, 3).unwrap();
+    assert_eq!(data, b"hi\n");
+    assert_eq!(proc.regs.V[0], 3);
+    assert_eq!(proc.regs.V[0xF], 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn sys_read_rejects_invalid_buffer() {
+    set_headless();
+    let root = temp_root("read_invalid");
+    let mut kernel = make_kernel(&root);
+    let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
+
+    {
+        let proc = kernel.proc_mut(pid).unwrap();
+        set_input_mode(proc, 1);
+    }
+    let _ = kernel.step_proc(pid).unwrap();
+
+    {
+        let proc = kernel.proc_mut(pid).unwrap();
+        write_frame(proc, 0x300, &[0x2000, 1]);
+        proc.regs.I = 0x300;
+        write_opcode(proc, proc.regs.PC, 0x0111);
+    }
+
+    kernel.push_input(b"z");
+    let outcome = kernel.step_proc(pid).unwrap();
+    assert_eq!(outcome, SyscallOutcome::Completed);
+    let proc = kernel.proc(pid).unwrap();
+    assert_eq!(proc.regs.V[0], 0x02);
+    assert_eq!(proc.regs.V[0xF], 1);
 
     let _ = fs::remove_dir_all(root);
 }

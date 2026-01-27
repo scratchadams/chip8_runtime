@@ -76,6 +76,7 @@ space.
 0x0104 = yield
 0x0110 = write
 0x0111 = read
+0x0112 = input_mode
 ```
 
 ---

@@ -106,6 +106,7 @@ and CLI runs.
 `Kernel` is the host-side runtime owner. It centralizes syscall registration,
 process state, input buffering, and cooperative scheduling in the extended OS
 model.
+Per-process input mode (line vs byte) controls how `sys_read` behaves.
 
 ```
 Kernel

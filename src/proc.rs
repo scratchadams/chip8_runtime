@@ -63,12 +63,19 @@ pub mod proc {
 
     impl Registers {}
 
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    pub enum InputMode {
+        Line,
+        Byte,
+    }
+
     pub struct Proc {
         pub regs: Registers,
         pub mem: Arc<Mutex<SharedMemory>>,
         pub display: DisplayWindow,
         pub page_table: Vec<u32>,
         pub vm_size: u32,
+        pub input_mode: InputMode,
         last_timer_tick: Instant,
     }
 
@@ -92,6 +99,7 @@ pub mod proc {
                 display: display,
                 page_table: page_table,
                 vm_size: vm_size,
+                input_mode: InputMode::Line,
                 last_timer_tick: Instant::now(),
             })
         }

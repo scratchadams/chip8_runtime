@@ -309,7 +309,25 @@ Where to look:
 
 ---
 
-## 14) Practical Reading Guide
+## 14) Input Modes (Line vs Byte)
+
+`sys_read` can behave in two ways, per-process:
+
+- **Line mode**: the kernel waits for a newline and delivers bytes up to the
+  newline (or the requested length).
+- **Byte mode**: the kernel delivers whatever bytes are available immediately.
+
+Switching is done via the `input_mode` syscall (`0x0112`). This lets CLI ROMs
+opt into line-oriented input without preventing other ROMs from using byte-precise
+reads.
+
+Where to look:
+- `src/kernel.rs` (`InputMode`, `sys_input_mode`, `sys_read`)
+- `SYSCALLS.md` for the ABI
+
+---
+
+## 15) Practical Reading Guide
 
 Suggested reading order:
 
@@ -324,7 +342,7 @@ This matches the runtime stack: memory -> process -> instructions -> OS layer.
 
 ---
 
-## 15) End-to-End Syscall Walkthrough (Annotated Trace)
+## 16) End-to-End Syscall Walkthrough (Annotated Trace)
 
 This is a single, concrete walkthrough of a syscall from the moment a Chip-8
 program executes the instruction to the moment the scheduler resumes the next

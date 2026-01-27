@@ -68,6 +68,7 @@ Error codes currently in use:
 0x0104 = yield
 0x0110 = write
 0x0111 = read
+0x0112 = input_mode
 ```
 
 ---
@@ -88,6 +89,9 @@ Returns:
 V0 = pid (low 8 bits)
 VF = 0 on success, 1 on error
 ```
+
+TODO:
+- Extend PID return to 16-bit via frame or register pair.
 
 Frame example:
 ```
@@ -193,6 +197,23 @@ VF = 0 on success, 1 on error
 
 Notes:
 - The caller blocks until input is available.
+- Input can be **line-oriented** or **byte-exact** depending on `input_mode`.
+
+### 0x0112 input_mode
+
+Args:
+```
+arg0 = mode (0 = line, 1 = byte)
+```
+
+Returns:
+```
+VF = 0 on success, 1 on error
+```
+
+Notes:
+- Line mode blocks until a newline is available and delivers up to the newline.
+- Byte mode delivers any available bytes immediately.
 
 ---
 
