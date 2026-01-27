@@ -1,6 +1,8 @@
 pub mod proc {
-    use std::io::Error;
+    use std::collections::HashMap;
     use std::fs;
+    use std::fs::File;
+    use std::io::Error;
     use std::mem::size_of;
     use std::sync::{Arc, Mutex};
     use std::time::{Duration, Instant};
@@ -76,6 +78,8 @@ pub mod proc {
         pub page_table: Vec<u32>,
         pub vm_size: u32,
         pub input_mode: InputMode,
+        pub fds: HashMap<u8, File>,
+        pub next_fd: u8,
         last_timer_tick: Instant,
     }
 
@@ -100,6 +104,8 @@ pub mod proc {
                 page_table: page_table,
                 vm_size: vm_size,
                 input_mode: InputMode::Line,
+                fds: HashMap::new(),
+                next_fd: 1,
                 last_timer_tick: Instant::now(),
             })
         }

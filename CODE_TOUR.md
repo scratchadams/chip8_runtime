@@ -327,7 +327,27 @@ Where to look:
 
 ---
 
-## 15) Practical Reading Guide
+## 15) Filesystem Syscalls and Root Validation
+
+The runtime exposes a host-backed filesystem to ROMs via `fs_list`, `fs_open`,
+`fs_read`, and `fs_close`. All paths are resolved **relative to the kernel
+root directory**. Absolute paths and `..` are rejected, and the root tree is
+validated at startup to enforce limits (max filename length, max entries per
+dir, max file size).
+
+Rust concepts in play:
+- `std::fs::read_dir` for directory iteration.
+- `Path` + `Component` for safe path normalization.
+- `std::fs::File` stored inside each `Proc` as an FD table.
+
+Where to look:
+- `src/kernel.rs` (`sys_fs_list`, `sys_fs_open`, `sys_fs_read`, `sys_fs_close`)
+- `src/proc.rs` (per-proc FD table)
+- `SYSCALLS.md` (ABI + record layout)
+
+---
+
+## 16) Practical Reading Guide
 
 Suggested reading order:
 
@@ -342,7 +362,7 @@ This matches the runtime stack: memory -> process -> instructions -> OS layer.
 
 ---
 
-## 16) End-to-End Syscall Walkthrough (Annotated Trace)
+## 17) End-to-End Syscall Walkthrough (Annotated Trace)
 
 This is a single, concrete walkthrough of a syscall from the moment a Chip-8
 program executes the instruction to the moment the scheduler resumes the next

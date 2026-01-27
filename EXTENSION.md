@@ -77,6 +77,10 @@ space.
 0x0110 = write
 0x0111 = read
 0x0112 = input_mode
+0x0120 = fs_list
+0x0121 = fs_open
+0x0122 = fs_read
+0x0123 = fs_close
 ```
 
 ---
@@ -295,10 +299,16 @@ Suggested error codes:
 0x01 = invalid syscall ID
 0x02 = invalid argument
 0x03 = I/O failure
-0x04 = stack overflow
-0x05 = stack underflow
-0x06 = invalid address
-0x07 = permission denied
+0x04 = not found
+0x05 = not a directory
+0x06 = is a directory
+0x07 = name too long
+0x08 = too many open files
+0x09 = invalid path
+0x0A = stack overflow
+0x0B = stack underflow
+0x0C = invalid address
+0x0D = permission denied
 ```
 
 ---

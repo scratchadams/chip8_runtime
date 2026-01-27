@@ -114,13 +114,19 @@ SYS 0x04: yield
 
 ## Phase 2: CLI ROM + I/O Layer (Text Console + Input) (2-4 weeks)
 
-Goal: a CLI ROM that can spawn other programs and basic text I/O.
+Goal: a real CLI ROM that can spawn other programs, list available ROMs, and
+handle basic text I/O.
 
 ### Options
 
 - **Text console service** (host prints strings)
 - **Shared console buffer** in memory (host renders a grid)
 - **Hybrid** (host output + Chip-8 input)
+
+### Additional requirements for a real CLI
+
+- Host-backed filesystem syscalls (list/open/read/close) to enumerate ROMs.
+- ROM-side helper routines for syscall frame construction and string parsing.
 
 ### Example syscall IDs
 
@@ -137,6 +143,8 @@ SYS 0x11: read_key
 
 - CLI can spawn another ROM and resume after it exits.
 - CLI can print and read user commands reliably.
+- CLI can list available ROMs from a host-backed filesystem.
+- CLI includes ROM-side helper routines for syscall frames and string parsing.
 
 ---
 
@@ -146,38 +154,37 @@ Goal: Chip-8 programs can list, open, read, and write files.
 
 ### Start small
 
-- Host-backed virtual filesystem (or RAM disk).
-- Small constraints:
-  - filename length 8-16 bytes
-  - max files 32
-  - file size limit 512-2K bytes
+- Host-backed filesystem rooted at the CLI root directory.
+- Current constraints (enforced at startup):
+  - filename length <= 64 bytes per path segment
+  - max entries per directory = 256
+  - max file size = 64 KB
+  - max open files per process = 32
 
 ### Example syscall IDs
 
 ```
-SYS 0x20: fs_list
-  in:  V1 = buffer ptr, V2 = max entries
+SYS 0x0120: fs_list
+  in:  arg0 = path ptr, arg1 = path len, arg2 = out buf ptr, arg3 = max entries
   out: V0 = count
 
-SYS 0x21: fs_open
-  in:  V1 = ptr to name, V2 = flags
+SYS 0x0121: fs_open
+  in:  arg0 = path ptr, arg1 = path len, arg2 = flags (read-only for now)
   out: V0 = fd
 
-SYS 0x22: fs_read
-  in:  V1 = fd, V2 = buf ptr, V3 = len
+SYS 0x0122: fs_read
+  in:  arg0 = fd, arg1 = buf ptr, arg2 = len
   out: V0 = bytes read
 
-SYS 0x23: fs_write
-  in:  V1 = fd, V2 = buf ptr, V3 = len
-  out: V0 = bytes written
-
-SYS 0x24: fs_close
-  in:  V1 = fd
-  out: V0 = status
+SYS 0x0123: fs_close
+  in:  arg0 = fd
+  out: VF = 0/1
 ```
 
 ### Milestone success
 
+- Implemented: fs_list/open/read/close (host-backed, root-constrained).
+- Remaining: fs_write and any permission model.
 - CLI can list files and run a ROM from the filesystem.
 
 ---

@@ -107,6 +107,8 @@ and CLI runs.
 process state, input buffering, and cooperative scheduling in the extended OS
 model.
 Per-process input mode (line vs byte) controls how `sys_read` behaves.
+Filesystem syscalls are host-backed and constrained to a validated root
+directory.
 
 ```
 Kernel

@@ -1,7 +1,8 @@
 pub mod kernel {
     use std::collections::{HashMap, VecDeque};
+    use std::fs;
     use std::io::{self, Error, ErrorKind, Read, Write};
-    use std::path::{Path, PathBuf};
+    use std::path::{Component, Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::thread;
     use std::time::Duration;
@@ -17,9 +18,25 @@ pub mod kernel {
     const SYS_WRITE: u16 = 0x0110;
     const SYS_READ: u16 = 0x0111;
     const SYS_INPUT_MODE: u16 = 0x0112;
+    const SYS_FS_LIST: u16 = 0x0120;
+    const SYS_FS_OPEN: u16 = 0x0121;
+    const SYS_FS_READ: u16 = 0x0122;
+    const SYS_FS_CLOSE: u16 = 0x0123;
 
     const ERR_INVALID: u8 = 0x02;
     const ERR_IO: u8 = 0x03;
+    const ERR_NOT_FOUND: u8 = 0x04;
+    const ERR_NOT_DIR: u8 = 0x05;
+    const ERR_IS_DIR: u8 = 0x06;
+    const ERR_NAME_TOO_LONG: u8 = 0x07;
+    const ERR_TOO_MANY_OPEN: u8 = 0x08;
+    const ERR_PATH: u8 = 0x09;
+
+    const MAX_FILENAME_LEN: usize = 64;
+    const MAX_DIR_ENTRIES: usize = 256;
+    const MAX_FILE_SIZE: u64 = 64 * 1024;
+    const MAX_OPEN_FILES: usize = 32;
+    const DIR_ENTRY_SIZE: usize = 1 + MAX_FILENAME_LEN + 1 + 4;
 
     // syscall handlers return scheduling outcome for the caller.
     #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -100,6 +117,7 @@ pub mod kernel {
             let root = root_dir
                 .canonicalize()
                 .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("invalid root dir: {e}")))?;
+            Self::validate_root_layout(&root)?;
             Ok(Kernel {
                 mem,
                 syscalls: SyscallTable::new(),
@@ -121,6 +139,10 @@ pub mod kernel {
             self.register_syscall(SYS_WRITE, sys_write)?;
             self.register_syscall(SYS_READ, sys_read)?;
             self.register_syscall(SYS_INPUT_MODE, sys_input_mode)?;
+            self.register_syscall(SYS_FS_LIST, sys_fs_list)?;
+            self.register_syscall(SYS_FS_OPEN, sys_fs_open)?;
+            self.register_syscall(SYS_FS_READ, sys_fs_read)?;
+            self.register_syscall(SYS_FS_CLOSE, sys_fs_close)?;
             Ok(())
         }
 
@@ -462,6 +484,101 @@ pub mod kernel {
             Ok(canon)
         }
 
+        fn resolve_fs_path(&self, name: &str) -> Result<PathBuf, Error> {
+            if name.is_empty() || name == "." {
+                return Ok(self.root_dir.clone());
+            }
+
+            let rel = Path::new(name);
+            if rel.is_absolute() {
+                return Err(Error::new(ErrorKind::InvalidInput, "absolute paths not allowed"));
+            }
+
+            for comp in rel.components() {
+                match comp {
+                    Component::CurDir => {}
+                    Component::ParentDir => {
+                        return Err(Error::new(ErrorKind::InvalidInput, "parent dir not allowed"));
+                    }
+                    Component::Normal(seg) => {
+                        let seg_len = seg.to_string_lossy().len();
+                        if seg_len > MAX_FILENAME_LEN {
+                            return Err(Error::new(
+                                ErrorKind::InvalidInput,
+                                format!("path segment exceeds {MAX_FILENAME_LEN} bytes: {seg_len}"),
+                            ));
+                        }
+                    }
+                    _ => {
+                        return Err(Error::new(ErrorKind::InvalidInput, "invalid path component"));
+                    }
+                }
+            }
+
+            let candidate = self.root_dir.join(rel);
+            let canon = candidate
+                .canonicalize()
+                .map_err(|e| Error::new(ErrorKind::NotFound, format!("path not found: {e}")))?;
+            if !canon.starts_with(&self.root_dir) {
+                return Err(Error::new(ErrorKind::PermissionDenied, "path escapes root"));
+            }
+            Ok(canon)
+        }
+
+        fn validate_root_layout(root: &Path) -> Result<(), Error> {
+            let mut stack = vec![root.to_path_buf()];
+            while let Some(dir) = stack.pop() {
+                let mut count = 0usize;
+                for entry in fs::read_dir(&dir)
+                    .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("cannot read {dir:?}: {e}")))? {
+                    let entry = entry.map_err(|e| {
+                        Error::new(ErrorKind::InvalidInput, format!("cannot read dir entry in {dir:?}: {e}"))
+                    })?;
+                    count += 1;
+                    if count > MAX_DIR_ENTRIES {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            format!(
+                                "directory {:?} exceeds max entries ({MAX_DIR_ENTRIES})",
+                                dir
+                            ),
+                        ));
+                    }
+                    let name = entry.file_name().to_string_lossy().to_string();
+                    if name.len() > MAX_FILENAME_LEN {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            format!(
+                                "entry name too long in {:?}: '{}' (max {MAX_FILENAME_LEN})",
+                                dir, name
+                            ),
+                        ));
+                    }
+                    let meta = fs::symlink_metadata(entry.path())
+                        .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("metadata error for {:?}: {e}", entry.path())))?;
+                    if meta.file_type().is_symlink() {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            format!("symlink not allowed in root: {:?}", entry.path()),
+                        ));
+                    }
+                    if meta.is_dir() {
+                        stack.push(entry.path());
+                    } else if meta.is_file() && meta.len() > MAX_FILE_SIZE {
+                        return Err(Error::new(
+                            ErrorKind::InvalidInput,
+                            format!(
+                                "file too large: {:?} ({} bytes, max {MAX_FILE_SIZE})",
+                                entry.path(),
+                                meta.len()
+                            ),
+                        ));
+                    }
+                }
+            }
+            Ok(())
+        }
+
         fn syscall_arg(proc: &mut Proc, index: usize) -> Result<u16, Error> {
             let base = proc.regs.I as u32;
             let frame_len = proc.read_u8(base)? as usize;
@@ -685,6 +802,301 @@ pub mod kernel {
         };
 
         proc.input_mode = mode;
+        proc.regs.V[0xF] = 0;
+        SyscallOutcome::Completed
+    }
+
+    fn sys_fs_list(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let path_ptr = match Kernel::syscall_arg(proc, 0) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let path_len = match Kernel::syscall_arg(proc, 1) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let out_ptr = match Kernel::syscall_arg(proc, 2) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let max_entries = match Kernel::syscall_arg(proc, 3) {
+            Ok(val) => val as usize,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        let path_bytes = match proc.read_bytes(path_ptr as u32, path_len as usize) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let path_str = String::from_utf8_lossy(&path_bytes).to_string();
+        let dir_path = match kernel.resolve_fs_path(&path_str) {
+            Ok(val) => val,
+            Err(err) => {
+                proc.regs.V[0] = if err.kind() == ErrorKind::NotFound {
+                    ERR_NOT_FOUND
+                } else {
+                    ERR_PATH
+                };
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let meta = match fs::metadata(&dir_path) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_NOT_FOUND;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        if !meta.is_dir() {
+            proc.regs.V[0] = ERR_NOT_DIR;
+            proc.regs.V[0xF] = 1;
+            return SyscallOutcome::Completed;
+        }
+
+        let mut count = 0usize;
+        let entries = match fs::read_dir(&dir_path) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_IO;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        for entry in entries {
+            if count >= max_entries {
+                break;
+            }
+            let entry = match entry {
+                Ok(val) => val,
+                Err(_) => continue,
+            };
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.len() > MAX_FILENAME_LEN {
+                proc.regs.V[0] = ERR_NAME_TOO_LONG;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+            let meta = match entry.metadata() {
+                Ok(val) => val,
+                Err(_) => continue,
+            };
+            let kind = if meta.is_dir() { 1u8 } else { 0u8 };
+            let size = if meta.is_file() { meta.len() as u32 } else { 0u32 };
+
+            let mut record = Vec::with_capacity(DIR_ENTRY_SIZE);
+            record.push(name.len() as u8);
+            record.extend_from_slice(name.as_bytes());
+            if name.len() < MAX_FILENAME_LEN {
+                record.extend(std::iter::repeat(0u8).take(MAX_FILENAME_LEN - name.len()));
+            }
+            record.push(kind);
+            record.extend_from_slice(&size.to_be_bytes());
+
+            let addr = out_ptr as u32 + (count * DIR_ENTRY_SIZE) as u32;
+            if proc.write_bytes(addr, &record).is_err() {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+            count += 1;
+        }
+
+        proc.regs.V[0] = count.min(0xFF) as u8;
+        proc.regs.V[0xF] = 0;
+        SyscallOutcome::Completed
+    }
+
+    fn sys_fs_open(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let path_ptr = match Kernel::syscall_arg(proc, 0) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let path_len = match Kernel::syscall_arg(proc, 1) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let _flags = Kernel::syscall_arg(proc, 2).unwrap_or(0);
+
+        let path_bytes = match proc.read_bytes(path_ptr as u32, path_len as usize) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let path_str = String::from_utf8_lossy(&path_bytes).to_string();
+        let file_path = match kernel.resolve_fs_path(&path_str) {
+            Ok(val) => val,
+            Err(err) => {
+                proc.regs.V[0] = if err.kind() == ErrorKind::NotFound {
+                    ERR_NOT_FOUND
+                } else {
+                    ERR_PATH
+                };
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let meta = match fs::metadata(&file_path) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_NOT_FOUND;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        if meta.is_dir() {
+            proc.regs.V[0] = ERR_IS_DIR;
+            proc.regs.V[0xF] = 1;
+            return SyscallOutcome::Completed;
+        }
+        if meta.len() > MAX_FILE_SIZE {
+            proc.regs.V[0] = ERR_IO;
+            proc.regs.V[0xF] = 1;
+            return SyscallOutcome::Completed;
+        }
+
+        if proc.fds.len() >= MAX_OPEN_FILES {
+            proc.regs.V[0] = ERR_TOO_MANY_OPEN;
+            proc.regs.V[0xF] = 1;
+            return SyscallOutcome::Completed;
+        }
+
+        let file = match fs::File::open(&file_path) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_IO;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        let mut fd = proc.next_fd;
+        for _ in 0..=u8::MAX {
+            if fd == 0 {
+                fd = 1;
+            }
+            if !proc.fds.contains_key(&fd) {
+                break;
+            }
+            fd = fd.wrapping_add(1);
+        }
+        if proc.fds.contains_key(&fd) {
+            proc.regs.V[0] = ERR_TOO_MANY_OPEN;
+            proc.regs.V[0xF] = 1;
+            return SyscallOutcome::Completed;
+        }
+
+        proc.fds.insert(fd, file);
+        proc.next_fd = fd.wrapping_add(1);
+
+        proc.regs.V[0] = fd;
+        proc.regs.V[0xF] = 0;
+        SyscallOutcome::Completed
+    }
+
+    fn sys_fs_read(_kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let fd = match Kernel::syscall_arg(proc, 0) {
+            Ok(val) => val as u8,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let buf = match Kernel::syscall_arg(proc, 1) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let len = match Kernel::syscall_arg(proc, 2) {
+            Ok(val) => val as usize,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        let file = match proc.fds.get_mut(&fd) {
+            Some(val) => val,
+            None => {
+                proc.regs.V[0] = ERR_NOT_FOUND;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        let max_len = len.min(0xFF);
+        let mut data = vec![0u8; max_len];
+        let read = match file.read(&mut data) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_IO;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        data.truncate(read);
+        if proc.write_bytes(buf as u32, &data).is_err() {
+            proc.regs.V[0] = ERR_INVALID;
+            proc.regs.V[0xF] = 1;
+            return SyscallOutcome::Completed;
+        }
+
+        proc.regs.V[0] = read.min(0xFF) as u8;
+        proc.regs.V[0xF] = 0;
+        SyscallOutcome::Completed
+    }
+
+    fn sys_fs_close(_kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let fd = match Kernel::syscall_arg(proc, 0) {
+            Ok(val) => val as u8,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        if proc.fds.remove(&fd).is_none() {
+            proc.regs.V[0] = ERR_NOT_FOUND;
+            proc.regs.V[0xF] = 1;
+            return SyscallOutcome::Completed;
+        }
         proc.regs.V[0xF] = 0;
         SyscallOutcome::Completed
     }

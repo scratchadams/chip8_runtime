@@ -8,6 +8,9 @@ use chip8_runtime::kernel::kernel::{Kernel, ProcState, SyscallOutcome};
 use chip8_runtime::proc::proc::Proc;
 use chip8_runtime::shared_memory::shared_memory::SharedMemory;
 
+const MAX_FILENAME_LEN: usize = 64;
+const DIR_ENTRY_SIZE: usize = 1 + MAX_FILENAME_LEN + 1 + 4;
+
 static INIT: Once = Once::new();
 
 fn set_headless() {
@@ -58,6 +61,21 @@ fn set_input_mode(proc: &mut Proc, mode: u16) {
     write_frame(proc, 0x360, &[mode]);
     proc.regs.I = 0x360;
     write_opcode(proc, proc.regs.PC, 0x0112);
+}
+
+fn read_dir_entries(proc: &mut Proc, base: u16, count: usize) -> Vec<(String, u8, u32)> {
+    let mut entries = Vec::new();
+    for idx in 0..count {
+        let addr = base as u32 + (idx * DIR_ENTRY_SIZE) as u32;
+        let name_len = proc.read_u8(addr).unwrap() as usize;
+        let name_bytes = proc.read_bytes(addr + 1, name_len).unwrap();
+        let name = String::from_utf8_lossy(&name_bytes).to_string();
+        let kind = proc.read_u8(addr + 1 + MAX_FILENAME_LEN as u32).unwrap();
+        let size_bytes = proc.read_bytes(addr + 1 + MAX_FILENAME_LEN as u32 + 1, 4).unwrap();
+        let size = u32::from_be_bytes([size_bytes[0], size_bytes[1], size_bytes[2], size_bytes[3]]);
+        entries.push((name, kind, size));
+    }
+    entries
 }
 
 #[test]
@@ -240,6 +258,84 @@ fn sys_spawn_creates_process() {
     assert_eq!(proc.regs.V[0xF], 0);
     let child_pid = proc.regs.V[0] as u32;
     assert!(kernel.proc(child_pid).is_some());
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn sys_fs_list_reads_root_entries() {
+    set_headless();
+    let root = temp_root("fs_list");
+    fs::write(root.join("a.ch8"), vec![1, 2, 3]).unwrap();
+    fs::create_dir(root.join("subdir")).unwrap();
+
+    let mut kernel = make_kernel(&root);
+    let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
+
+    {
+        let proc = kernel.proc_mut(pid).unwrap();
+        write_frame(proc, 0x300, &[0x0000, 0, 0x0400, 10]);
+        proc.regs.I = 0x300;
+        write_opcode(proc, proc.regs.PC, 0x0120);
+    }
+
+    let outcome = kernel.step_proc(pid).unwrap();
+    assert_eq!(outcome, SyscallOutcome::Completed);
+
+    let proc = kernel.proc_mut(pid).unwrap();
+    assert_eq!(proc.regs.V[0xF], 0);
+    let count = proc.regs.V[0] as usize;
+    let entries = read_dir_entries(proc, 0x0400, count);
+    assert!(entries.iter().any(|(n, k, _)| n == "a.ch8" && *k == 0));
+    assert!(entries.iter().any(|(n, k, _)| n == "subdir" && *k == 1));
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn sys_fs_open_read_close_roundtrip() {
+    set_headless();
+    let root = temp_root("fs_open");
+    fs::write(root.join("hello.txt"), b"hello").unwrap();
+
+    let mut kernel = make_kernel(&root);
+    let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
+
+    {
+        let proc = kernel.proc_mut(pid).unwrap();
+        proc.write_bytes(0x340, b"hello.txt").unwrap();
+        write_frame(proc, 0x300, &[0x0340, 9, 0]);
+        proc.regs.I = 0x300;
+        write_opcode(proc, proc.regs.PC, 0x0121);
+    }
+
+    let outcome = kernel.step_proc(pid).unwrap();
+    assert_eq!(outcome, SyscallOutcome::Completed);
+    let fd = kernel.proc(pid).unwrap().regs.V[0];
+    assert_ne!(fd, 0);
+
+    {
+        let proc = kernel.proc_mut(pid).unwrap();
+        write_frame(proc, 0x320, &[fd as u16, 0x0500, 5]);
+        proc.regs.I = 0x320;
+        write_opcode(proc, proc.regs.PC, 0x0122);
+    }
+
+    let outcome = kernel.step_proc(pid).unwrap();
+    assert_eq!(outcome, SyscallOutcome::Completed);
+    let proc = kernel.proc_mut(pid).unwrap();
+    let data = proc.read_bytes(0x0500, 5).unwrap();
+    assert_eq!(data, b"hello");
+    assert_eq!(proc.regs.V[0], 5);
+
+    {
+        let proc = kernel.proc_mut(pid).unwrap();
+        write_frame(proc, 0x340, &[fd as u16]);
+        proc.regs.I = 0x340;
+        write_opcode(proc, proc.regs.PC, 0x0123);
+    }
+    let outcome = kernel.step_proc(pid).unwrap();
+    assert_eq!(outcome, SyscallOutcome::Completed);
 
     let _ = fs::remove_dir_all(root);
 }

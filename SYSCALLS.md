@@ -55,6 +55,12 @@ Error codes currently in use:
 ```
 0x02 = invalid argument
 0x03 = I/O failure
+0x04 = not found
+0x05 = not a directory
+0x06 = is a directory
+0x07 = name too long
+0x08 = too many open files
+0x09 = invalid path
 ```
 
 ---
@@ -69,6 +75,10 @@ Error codes currently in use:
 0x0110 = write
 0x0111 = read
 0x0112 = input_mode
+0x0120 = fs_list
+0x0121 = fs_open
+0x0122 = fs_read
+0x0123 = fs_close
 ```
 
 ---
@@ -217,7 +227,92 @@ Notes:
 
 ---
 
-## 6) Headless Mode (Testing)
+## 6) Filesystem Syscalls (Host-backed)
+
+All filesystem paths are resolved **relative to the kernel root directory**.
+Absolute paths and `..` are rejected. At startup, the kernel validates the root
+directory layout against the limits below and fails fast with a descriptive
+error if any violation is found.
+
+Limits (current):
+```
+MAX_FILENAME_LEN = 64 bytes (per path segment)
+MAX_DIR_ENTRIES  = 256 entries per directory
+MAX_FILE_SIZE    = 64 KB
+MAX_OPEN_FILES   = 32 per process
+```
+
+Directory entry record layout (`fs_list` output):
+```
+name_len  : u8
+name      : [u8; 64]   (padded with 0s)
+kind      : u8         (0 = file, 1 = dir)
+size_be   : u32        (big-endian, bytes; 0 for dirs)
+```
+
+Record size: `1 + 64 + 1 + 4 = 70` bytes.
+
+### 0x0120 fs_list
+
+Args:
+```
+arg0 = ptr to path string (relative, may be empty for root)
+arg1 = path length
+arg2 = out buffer pointer
+arg3 = max entries
+```
+
+Returns:
+```
+V0 = entries written (low 8 bits)
+VF = 0 on success, 1 on error
+```
+
+### 0x0121 fs_open
+
+Args:
+```
+arg0 = ptr to path string (relative)
+arg1 = path length
+arg2 = flags (currently ignored; read-only)
+```
+
+Returns:
+```
+V0 = fd (8-bit)
+VF = 0 on success, 1 on error
+```
+
+### 0x0122 fs_read
+
+Args:
+```
+arg0 = fd
+arg1 = buffer pointer
+arg2 = length (bytes; max 255 per call)
+```
+
+Returns:
+```
+V0 = bytes read (low 8 bits; 0 at EOF)
+VF = 0 on success, 1 on error
+```
+
+### 0x0123 fs_close
+
+Args:
+```
+arg0 = fd
+```
+
+Returns:
+```
+VF = 0 on success, 1 on error
+```
+
+---
+
+## 7) Headless Mode (Testing)
 
 If `CHIP8_HEADLESS` is set in the environment, new displays are created without
 opening a window. This is intended for tests and CI.
