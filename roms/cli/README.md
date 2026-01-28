@@ -60,6 +60,7 @@ cargo run -- --root /path/to/rom/root roms/cli/build/cli.ch8
 roms/cli/
   cli.c8s         # main program + command dispatch
   cli.xx          # annotated ROM diagram (xx format, byte-for-byte)
+  xx_diagram.py   # regenerate/verify cli.xx from build/cli.ch8
   lib/sys.c8s     # syscall frame builders + wrappers
   lib/data.c8s    # fixed buffers + constant strings
   build.sh        # concatenates + assembles into build/cli.ch8
@@ -80,7 +81,13 @@ format to annotate the exact bytes with box-drawing comments, syscall notes,
 and opcode descriptions. It is byte-for-byte identical to `build/cli.ch8`
 when assembled by `xx.py`.
 
-To regenerate a `.ch8` from the diagram:
+To regenerate or verify the diagram from the ROM:
+
+```
+roms/cli/xx_diagram.py --build --verify
+```
+
+To regenerate a `.ch8` from the diagram (using upstream `xx.py`):
 
 ```
 python3 /path/to/xx.py roms/cli/cli.xx -o roms/cli/build/cli_from_xx.ch8
