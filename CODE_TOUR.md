@@ -319,10 +319,11 @@ Where to look:
 
 Switching is done via the `input_mode` syscall (`0x0112`). This lets CLI ROMs
 opt into line-oriented input without preventing other ROMs from using byte-precise
-reads.
+reads. Output/input routing is controlled separately via `console_mode`
+(`0x0113`), which allows a ROM to opt into the display-backed text console.
 
 Where to look:
-- `src/kernel.rs` (`InputMode`, `sys_input_mode`, `sys_read`)
+- `src/kernel.rs` (`InputMode`, `ConsoleMode`, `sys_input_mode`, `sys_console_mode`, `sys_read`)
 - `SYSCALLS.md` for the ABI
 
 ---
@@ -522,3 +523,140 @@ If this had been `SYS read (0x0111)` and no input was available:
   which continues **after** the syscall instruction (at the already-advanced PC).
 
 This is why the syscall instruction is not re-executed after unblocking.
+
+---
+
+## 16) CLI ROM (c8asm) — End-to-End Example in Chip-8
+
+The runtime is now complemented by a **c8asm-based CLI ROM** under `roms/cli/`.
+This ROM is intentionally small but fully functional, and it serves two roles:
+
+1) A real user-facing shell for the runtime.
+2) A living example of how to use the syscall ABI from Chip-8.
+
+The key design goal is readability: anyone can open the ROM and understand how
+to build syscall frames, call the kernel, and parse input without hunting
+through host code.
+
+The CLI ROM opts into the **display-backed console** (`console_mode = 1`), so
+all input/output occurs inside the Chip-8 window using an 8x4 character grid.
+
+### 16.1 File Layout
+
+```
+roms/cli/
+  cli.c8s         # main program + command dispatch
+  lib/sys.c8s     # syscall frame builders + wrappers
+  lib/data.c8s    # fixed buffers + constant strings
+  build.sh        # concatenates + assembles into build/cli.ch8
+```
+
+The build step concatenates the three source files into one `.c8s` source:
+
+```
+roms/cli/build/cli_combined.c8s
+```
+
+The build script then assembles it into a `.ch8` ROM using the in-repo `c8asm`
+tool. The runtime uses this ROM like any other program.
+
+### 16.2 Why a Helper Library?
+
+Chip-8 has no native notion of syscalls. In this runtime, syscalls are invoked
+via `0nnn` where `nnn` is the syscall ID. The kernel expects a **frame** pointed
+to by `I`:
+
+```
+I + 0: length (bytes, including this byte)
+I + 1: arg0_hi
+I + 2: arg0_lo
+I + 3: arg1_hi
+I + 4: arg1_lo
+I + 5: arg2_hi
+I + 6: arg2_lo
+I + 7: arg3_hi
+I + 8: arg3_lo
+```
+
+Hand-writing that frame in every ROM would be error-prone, so `lib/sys.c8s`
+provides:
+
+- **Frame builders** (`frame1`..`frame4`) that write a frame into a fixed buffer.
+- **Syscall wrappers** (`sys_write`, `sys_read`, `sys_fs_list`, ...) that emit
+  the `0nnn` trap after the frame is constructed.
+
+This isolates the ABI in one place, keeps the ROM readable, and ensures a
+future ROM can re-use the same library with minimal changes.
+
+### 16.3 Fixed Addresses as a Design Tool
+
+Chip-8 lacks an instruction to load a full 16-bit pointer into `I` using
+registers. To keep pointer arithmetic simple, the ROM uses **fixed buffer
+addresses** with carefully chosen low bytes:
+
+- `LINE_BUF` lives at `0x800`, so `0x800 + offset` never carries into the high
+  byte for an 80-byte buffer.
+- `DIR_BUF` lives at `0x900`, so each directory record offset fits in one byte.
+
+This lets the CLI build pointers by setting a single high byte and using the
+low byte as an offset. For example:
+
+```
+arg0_hi = 0x08
+arg0_lo = tok_offset
+```
+
+The same strategy is used for directory entries and file buffers.
+
+### 16.4 Command Dispatch (Tokenization)
+
+The CLI parses a single line into two tokens:
+
+1) `tok1` — the command (help/ls/run/cat/exit)
+2) `tok2` — optional argument (ROM name or file name)
+
+This is done by scanning `LINE_BUF` byte-by-byte:
+
+1) Skip leading spaces.
+2) Mark `tok1` start and length until a space.
+3) Skip spaces.
+4) Mark `tok2` start and length until a space.
+
+The offsets are stored in registers (`vB..vE`) and later reused to build syscall
+arguments without copying the string.
+
+### 16.5 Syscall Usage Patterns
+
+Each command is essentially a small syscall sequence:
+
+#### `help`
+- `sys_write(HELP_TEXT, len)`
+
+#### `ls`
+- `sys_fs_list("", 0, DIR_BUF, 4)`
+- Iterate over returned records, print each name.
+- Append `/` for directories.
+
+#### `run <rom>`
+- `sys_spawn(tok2_ptr, tok2_len, pages=1)`
+- `sys_wait(pid)` to block until it exits.
+
+#### `cat <file>`
+- `sys_fs_open(tok2_ptr, tok2_len, flags=0)`
+- Loop `sys_fs_read(fd, FILE_BUF, 0x40)` and `sys_write(FILE_BUF, n)`
+- `sys_fs_close(fd)`
+
+#### `exit`
+- `sys_exit(0)` then halt in-place until the scheduler removes the process.
+
+### 16.6 Why This Matters
+
+The CLI ROM is intentionally small but complete:
+
+- It proves the syscall ABI works end-to-end in a real Chip-8 program.
+- It demonstrates a reusable pattern for **ROM-side libraries**.
+- It documents the practical constraints of Chip-8 (no pointer load, tiny RAM)
+  and shows how to design around them cleanly.
+
+For an even deeper walkthrough of the ROM itself (memory map, constants, and
+string tables), see `roms/cli/README.md`.

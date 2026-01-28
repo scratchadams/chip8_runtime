@@ -8,7 +8,7 @@ pub mod kernel {
     use std::time::Duration;
 
     use crate::display::display::DisplayWindow;
-    use crate::proc::proc::{InputMode, Proc};
+    use crate::proc::proc::{ConsoleMode, InputMode, Proc};
     use crate::shared_memory::shared_memory::SharedMemory;
 
     const SYS_SPAWN: u16 = 0x0101;
@@ -18,6 +18,7 @@ pub mod kernel {
     const SYS_WRITE: u16 = 0x0110;
     const SYS_READ: u16 = 0x0111;
     const SYS_INPUT_MODE: u16 = 0x0112;
+    const SYS_CONSOLE_MODE: u16 = 0x0113;
     const SYS_FS_LIST: u16 = 0x0120;
     const SYS_FS_OPEN: u16 = 0x0121;
     const SYS_FS_READ: u16 = 0x0122;
@@ -139,6 +140,7 @@ pub mod kernel {
             self.register_syscall(SYS_WRITE, sys_write)?;
             self.register_syscall(SYS_READ, sys_read)?;
             self.register_syscall(SYS_INPUT_MODE, sys_input_mode)?;
+            self.register_syscall(SYS_CONSOLE_MODE, sys_console_mode)?;
             self.register_syscall(SYS_FS_LIST, sys_fs_list)?;
             self.register_syscall(SYS_FS_OPEN, sys_fs_open)?;
             self.register_syscall(SYS_FS_READ, sys_fs_read)?;
@@ -252,6 +254,7 @@ pub mod kernel {
         /// run the cooperative scheduler until no runnable procs remain.
         pub fn run(&mut self) -> Result<(), Error> {
             loop {
+                self.poll_console_input();
                 let mut ran_any = false;
                 let pids: Vec<u32> = self.procs.keys().copied().collect();
                 for pid in pids {
@@ -266,12 +269,12 @@ pub mod kernel {
                     continue;
                 }
 
-                if self.any_blocked_on_read_line() {
+                if self.any_blocked_on_read_line_host() {
                     self.blocking_read_line_from_stdin()?;
                     continue;
                 }
 
-                if self.any_blocked_on_read_byte() {
+                if self.any_blocked_on_read_byte_host() {
                     self.blocking_read_byte_from_stdin()?;
                     continue;
                 }
@@ -290,6 +293,55 @@ pub mod kernel {
         pub fn push_input(&mut self, data: &[u8]) {
             self.input.extend(data);
             self.unblock_readers();
+        }
+
+        /// inject console input for a specific pid (tests/tools).
+        #[allow(dead_code)]
+        pub fn push_console_input(&mut self, pid: u32, data: &[u8]) {
+            if let Some(entry) = self.procs.get_mut(&pid) {
+                entry.proc.console_input.extend(data);
+            }
+            self.unblock_readers();
+        }
+
+        fn poll_console_input(&mut self) {
+            let pids: Vec<u32> = self.procs.keys().copied().collect();
+            let mut saw_input = false;
+
+            for pid in pids {
+                let mut entry = match self.procs.remove(&pid) {
+                    Some(entry) => entry,
+                    None => continue,
+                };
+
+                if entry.proc.console_mode == ConsoleMode::Display {
+                    entry.proc.display.poll_input();
+                    let data = entry.proc.display.drain_text_input();
+                    if !data.is_empty() {
+                        self.apply_console_input(&mut entry.proc, &data);
+                        saw_input = true;
+                    }
+                }
+
+                self.procs.insert(pid, entry);
+            }
+
+            if saw_input {
+                self.unblock_readers();
+            }
+        }
+
+        fn apply_console_input(&mut self, proc: &mut Proc, data: &[u8]) {
+            for &byte in data {
+                if byte == 0x08 {
+                    if proc.console_input.pop_back().is_some() {
+                        proc.display.console_backspace();
+                    }
+                    continue;
+                }
+                proc.console_input.push_back(byte);
+                proc.display.console_write(&[byte]);
+            }
         }
 
         fn run_proc_until_yield_or_block(&mut self, pid: u32) -> Result<(), Error> {
@@ -352,16 +404,20 @@ pub mod kernel {
                 .any(|entry| entry.state == ProcState::Blocked)
         }
 
-        fn any_blocked_on_read_line(&self) -> bool {
+        fn any_blocked_on_read_line_host(&self) -> bool {
             self.procs.values().any(|entry| match entry.waiting_for {
-                Some(WaitTarget::Read { mode: InputMode::Line, .. }) => true,
+                Some(WaitTarget::Read { mode: InputMode::Line, .. }) => {
+                    entry.proc.console_mode == ConsoleMode::Host
+                }
                 _ => false,
             })
         }
 
-        fn any_blocked_on_read_byte(&self) -> bool {
+        fn any_blocked_on_read_byte_host(&self) -> bool {
             self.procs.values().any(|entry| match entry.waiting_for {
-                Some(WaitTarget::Read { mode: InputMode::Byte, .. }) => true,
+                Some(WaitTarget::Read { mode: InputMode::Byte, .. }) => {
+                    entry.proc.console_mode == ConsoleMode::Host
+                }
                 _ => false,
             })
         }
@@ -383,15 +439,71 @@ pub mod kernel {
         }
 
         fn unblock_readers(&mut self) {
+            // console-backed readers: each proc has its own input queue.
+            for entry in self.procs.values_mut() {
+                if entry.state != ProcState::Blocked {
+                    continue;
+                }
+                if entry.proc.console_mode != ConsoleMode::Display {
+                    continue;
+                }
+                let Some(WaitTarget::Read { buf, len, mode: InputMode::Line }) = entry.waiting_for else {
+                    continue;
+                };
+                let Some(newline_idx) = Self::find_newline_in(&entry.proc.console_input) else {
+                    continue;
+                };
+                let count = (len as usize).min(newline_idx + 1);
+                let data = Self::pop_input(&mut entry.proc.console_input, count);
+                if entry.proc.write_bytes(buf as u32, &data).is_err() {
+                    entry.proc.regs.V[0] = ERR_INVALID;
+                    entry.proc.regs.V[0xF] = 1;
+                } else {
+                    entry.proc.regs.V[0] = count.min(0xFF) as u8;
+                    entry.proc.regs.V[0xF] = 0;
+                }
+                entry.state = ProcState::Running;
+                entry.waiting_for = None;
+            }
+
+            for entry in self.procs.values_mut() {
+                if entry.state != ProcState::Blocked {
+                    continue;
+                }
+                if entry.proc.console_mode != ConsoleMode::Display {
+                    continue;
+                }
+                let Some(WaitTarget::Read { buf, len, mode: InputMode::Byte }) = entry.waiting_for else {
+                    continue;
+                };
+                if entry.proc.console_input.is_empty() {
+                    continue;
+                }
+                let count = (len as usize).min(entry.proc.console_input.len());
+                let data = Self::pop_input(&mut entry.proc.console_input, count);
+                if entry.proc.write_bytes(buf as u32, &data).is_err() {
+                    entry.proc.regs.V[0] = ERR_INVALID;
+                    entry.proc.regs.V[0xF] = 1;
+                } else {
+                    entry.proc.regs.V[0] = count.min(0xFF) as u8;
+                    entry.proc.regs.V[0xF] = 0;
+                }
+                entry.state = ProcState::Running;
+                entry.waiting_for = None;
+            }
+
             if self.input.is_empty() {
                 return;
             }
 
             let (procs, input) = (&mut self.procs, &mut self.input);
 
-            // line-mode readers get priority and only unblock when a newline is present.
+            // host-backed readers: line mode first, then byte mode.
             for entry in procs.values_mut() {
                 if entry.state != ProcState::Blocked {
+                    continue;
+                }
+                if entry.proc.console_mode != ConsoleMode::Host {
                     continue;
                 }
                 let Some(WaitTarget::Read { buf, len, mode: InputMode::Line }) = entry.waiting_for else {
@@ -415,6 +527,9 @@ pub mod kernel {
 
             for entry in procs.values_mut() {
                 if entry.state != ProcState::Blocked {
+                    continue;
+                }
+                if entry.proc.console_mode != ConsoleMode::Host {
                     continue;
                 }
                 let Some(WaitTarget::Read { buf, len, mode: InputMode::Byte }) = entry.waiting_for else {
@@ -713,6 +828,13 @@ pub mod kernel {
             }
         };
 
+        if proc.console_mode == ConsoleMode::Display {
+            proc.display.console_write(&data);
+            proc.regs.V[0] = (data.len().min(0xFF)) as u8;
+            proc.regs.V[0xF] = 0;
+            return SyscallOutcome::Completed;
+        }
+
         let mut stdout = io::stdout();
         if stdout.write_all(&data).is_err() {
             proc.regs.V[0] = ERR_IO;
@@ -747,6 +869,25 @@ pub mod kernel {
 
         match mode {
             InputMode::Line => {
+                if proc.console_mode == ConsoleMode::Display {
+                    let Some(newline_idx) = Kernel::find_newline_in(&proc.console_input) else {
+                        kernel
+                            .pending_block
+                            .insert(pid, WaitTarget::Read { buf, len, mode });
+                        return SyscallOutcome::Blocked;
+                    };
+                    let count = (len as usize).min(newline_idx + 1);
+                    let data = Kernel::pop_input(&mut proc.console_input, count);
+                    if proc.write_bytes(buf as u32, &data).is_err() {
+                        proc.regs.V[0] = ERR_INVALID;
+                        proc.regs.V[0xF] = 1;
+                    } else {
+                        proc.regs.V[0] = count.min(0xFF) as u8;
+                        proc.regs.V[0xF] = 0;
+                    }
+                    return SyscallOutcome::Completed;
+                }
+
                 let Some(newline_idx) = Kernel::find_newline_in(&kernel.input) else {
                     kernel
                         .pending_block
@@ -765,6 +906,25 @@ pub mod kernel {
                 SyscallOutcome::Completed
             }
             InputMode::Byte => {
+                if proc.console_mode == ConsoleMode::Display {
+                    if proc.console_input.is_empty() {
+                        kernel
+                            .pending_block
+                            .insert(pid, WaitTarget::Read { buf, len, mode });
+                        return SyscallOutcome::Blocked;
+                    }
+                    let count = (len as usize).min(proc.console_input.len());
+                    let data = Kernel::pop_input(&mut proc.console_input, count);
+                    if proc.write_bytes(buf as u32, &data).is_err() {
+                        proc.regs.V[0] = ERR_INVALID;
+                        proc.regs.V[0xF] = 1;
+                    } else {
+                        proc.regs.V[0] = count.min(0xFF) as u8;
+                        proc.regs.V[0xF] = 0;
+                    }
+                    return SyscallOutcome::Completed;
+                }
+
                 if kernel.input.is_empty() {
                     kernel
                         .pending_block
@@ -802,6 +962,30 @@ pub mod kernel {
         };
 
         proc.input_mode = mode;
+        proc.regs.V[0xF] = 0;
+        SyscallOutcome::Completed
+    }
+
+    fn sys_console_mode(_kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let mode = match Kernel::syscall_arg(proc, 0) {
+            Ok(0) => ConsoleMode::Host,
+            Ok(1) => ConsoleMode::Display,
+            Ok(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        proc.console_mode = mode;
+        if mode == ConsoleMode::Display {
+            proc.display.console_reset();
+        }
         proc.regs.V[0xF] = 0;
         SyscallOutcome::Completed
     }

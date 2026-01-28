@@ -1,0 +1,54 @@
+# Chip-8 CLI ROM data layout (structured blocks)
+# Buffers and constant strings.
+
+section data @ 0x800 {
+  LINE_BUF: zero 0x50
+}
+
+section data @ 0x850 {
+  FRAME: zero 0x10
+}
+
+section data @ 0x900 {
+  DIR_BUF: zero 0x118
+}
+
+section data @ 0xA20 {
+  FILE_BUF: zero 0x40
+}
+
+section data @ 0xB00 {
+  PROMPT: ascii "> "
+}
+
+section data @ 0xB10 {
+  WELCOME: ascii "chip8 cli ready\n"
+}
+
+section data @ 0xB40 {
+  HELP_TEXT: ascii "help - show commands\nls   - list files\nrun  - run a rom\ncat  - print file\nexit - quit\n"
+}
+
+section data @ 0xBA0 {
+  ERR_UNKNOWN: ascii "unknown command\n"
+}
+
+section data @ 0xBB0 {
+  ERR_USAGE_RUN: ascii "usage: run <rom>\n"
+}
+
+section data @ 0xBC1 {
+  ERR_USAGE_CAT: ascii "usage: cat <file>\n"
+}
+
+section data @ 0xBD4 {
+  ERR_GENERIC: ascii "error\n"
+}
+
+section data @ 0xBE0 {
+  SLASH: ascii "/"
+}
+
+section data @ 0xBE1 {
+  NEWLINE: ascii "\n"
+}

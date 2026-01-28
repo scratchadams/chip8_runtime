@@ -75,6 +75,7 @@ Error codes currently in use:
 0x0110 = write
 0x0111 = read
 0x0112 = input_mode
+0x0113 = console_mode
 0x0120 = fs_list
 0x0121 = fs_open
 0x0122 = fs_read
@@ -208,6 +209,8 @@ VF = 0 on success, 1 on error
 Notes:
 - The caller blocks until input is available.
 - Input can be **line-oriented** or **byte-exact** depending on `input_mode`.
+- When `console_mode` is set to display, input/output is routed through the
+  Chip-8 window instead of the host stdin/stdout.
 
 ### 0x0112 input_mode
 
@@ -224,6 +227,22 @@ VF = 0 on success, 1 on error
 Notes:
 - Line mode blocks until a newline is available and delivers up to the newline.
 - Byte mode delivers any available bytes immediately.
+
+### 0x0113 console_mode
+
+Args:
+```
+arg0 = mode (0 = host stdin/stdout, 1 = display console)
+```
+
+Returns:
+```
+VF = 0 on success, 1 on error
+```
+
+Notes:
+- Display mode renders text into the Chip-8 window using an 8x4 character grid.
+- Input comes from the window keyboard and is echoed to the console.
 
 ---
 

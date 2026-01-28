@@ -1,0 +1,164 @@
+# Chip-8 CLI ROM syscall helpers (structured blocks)
+#
+# Calling convention:
+# - arg0 = v1 (hi), v2 (lo)
+# - arg1 = v3 (hi), v4 (lo)
+# - arg2 = v5 (hi), v6 (lo)
+# - arg3 = v7 (hi), v8 (lo)
+# - v0 is scratch in frame builders
+# - v9..vE are caller-owned
+
+section code {
+  # ---- frame builders ----
+  label frame1 {
+    i := FRAME
+    v0 := 0x03
+    save v0
+    v0 := v1
+    save v0
+    v0 := v2
+    save v0
+    return
+  }
+
+  label frame2 {
+    i := FRAME
+    v0 := 0x05
+    save v0
+    v0 := v1
+    save v0
+    v0 := v2
+    save v0
+    v0 := v3
+    save v0
+    v0 := v4
+    save v0
+    return
+  }
+
+  label frame3 {
+    i := FRAME
+    v0 := 0x07
+    save v0
+    v0 := v1
+    save v0
+    v0 := v2
+    save v0
+    v0 := v3
+    save v0
+    v0 := v4
+    save v0
+    v0 := v5
+    save v0
+    v0 := v6
+    save v0
+    return
+  }
+
+  label frame4 {
+    i := FRAME
+    v0 := 0x09
+    save v0
+    v0 := v1
+    save v0
+    v0 := v2
+    save v0
+    v0 := v3
+    save v0
+    v0 := v4
+    save v0
+    v0 := v5
+    save v0
+    v0 := v6
+    save v0
+    v0 := v7
+    save v0
+    v0 := v8
+    save v0
+    return
+  }
+
+  # ---- syscall wrappers ----
+  label sys_spawn {
+    call frame3
+    i := FRAME
+    sys 0x0101
+    return
+  }
+
+  label sys_exit {
+    call frame1
+    i := FRAME
+    sys 0x0102
+    return
+  }
+
+  label sys_wait {
+    call frame1
+    i := FRAME
+    sys 0x0103
+    return
+  }
+
+  label sys_yield {
+    i := FRAME
+    sys 0x0104
+    return
+  }
+
+  label sys_write {
+    call frame2
+    i := FRAME
+    sys 0x0110
+    return
+  }
+
+  label sys_read {
+    call frame2
+    i := FRAME
+    sys 0x0111
+    return
+  }
+
+  label sys_input_mode {
+    call frame1
+    i := FRAME
+    sys 0x0112
+    return
+  }
+
+  label sys_console_mode {
+    call frame1
+    i := FRAME
+    sys 0x0113
+    return
+  }
+
+  label sys_fs_list {
+    call frame4
+    i := FRAME
+    sys 0x0120
+    return
+  }
+
+  label sys_fs_open {
+    call frame3
+    i := FRAME
+    sys 0x0121
+    return
+  }
+
+  label sys_fs_read {
+    call frame3
+    i := FRAME
+    sys 0x0122
+    return
+  }
+
+  label sys_fs_close {
+    call frame1
+    i := FRAME
+    sys 0x0123
+    return
+  }
+}

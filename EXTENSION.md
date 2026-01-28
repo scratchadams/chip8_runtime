@@ -77,6 +77,7 @@ space.
 0x0110 = write
 0x0111 = read
 0x0112 = input_mode
+0x0113 = console_mode
 0x0120 = fs_list
 0x0121 = fs_open
 0x0122 = fs_read

@@ -1,0 +1,500 @@
+# Chip-8 CLI ROM (structured blocks)
+# Main entrypoint + command dispatch.
+#
+# Build: run roms/cli/build.sh to assemble into build/cli.ch8.
+
+section code @ 0x200 {
+  label main {
+    # Route stdin/stdout to the display console.
+    v1 := 0x00
+    v2 := 0x01
+    call sys_console_mode
+
+    # Force line-oriented input for this ROM.
+    v1 := 0x00
+    v2 := 0x00
+    call sys_input_mode
+
+    call print_welcome
+  }
+
+  label repl {
+    call print_prompt
+    call read_line
+
+    # If read failed, print a generic error and continue.
+    if vF != 0x00 then jump read_error
+
+    v9 := v0
+    if v9 == 0x00 then jump repl
+
+    # Strip trailing newline if present.
+    v0 := v9
+    v0 -= 0x01
+    i := LINE_BUF
+    i += v0
+    load v0
+    if v0 != 0x0A then jump parse_line
+    v9 -= 0x01
+  }
+
+  label parse_line {
+    # Tokenize into tok1 (command) and tok2 (arg).
+    vA := 0x00
+    vB := 0x00
+    vC := 0x00
+    vD := 0x00
+    vE := 0x00
+  }
+
+  label skip_leading {
+    if vA == v9 then jump repl
+    i := LINE_BUF
+    i += vA
+    load v0
+    if v0 != 0x20 then jump tok1_start
+    vA += 0x01
+    jump skip_leading
+  }
+
+  label tok1_start {
+    vB := vA
+    vC := 0x00
+  }
+
+  label scan_tok1 {
+    if vA == v9 then jump tok1_done
+    i := LINE_BUF
+    i += vA
+    load v0
+    if v0 == 0x20 then jump tok1_done
+    vC += 0x01
+    vA += 0x01
+    jump scan_tok1
+  }
+
+  label tok1_done {
+    # Skip spaces to token 2 (optional).
+  }
+
+  label skip_between {
+    if vA == v9 then jump dispatch
+    i := LINE_BUF
+    i += vA
+    load v0
+    if v0 != 0x20 then jump tok2_start
+    vA += 0x01
+    jump skip_between
+  }
+
+  label tok2_start {
+    vD := vA
+    vE := 0x00
+  }
+
+  label scan_tok2 {
+    if vA == v9 then jump dispatch
+    i := LINE_BUF
+    i += vA
+    load v0
+    if v0 == 0x20 then jump dispatch
+    vE += 0x01
+    vA += 0x01
+    jump scan_tok2
+  }
+
+  label dispatch {
+    if vC == 0x00 then jump repl
+    if vC == 0x02 then jump cmd_len2
+    if vC == 0x03 then jump cmd_len3
+    if vC == 0x04 then jump cmd_len4
+    jump cmd_unknown
+  }
+
+  # ---- 2-char commands ----
+  label cmd_len2 {
+    # "ls"
+    v1 := vB
+    i := LINE_BUF
+    i += v1
+    load v0
+    if v0 != 0x6C then jump cmd_unknown
+
+    v1 := vB
+    v1 += 0x01
+    i := LINE_BUF
+    i += v1
+    load v0
+    if v0 != 0x73 then jump cmd_unknown
+
+    jump cmd_ls
+  }
+
+  # ---- 3-char commands ----
+  label cmd_len3 {
+    # "run"
+    v1 := vB
+    i := LINE_BUF
+    i += v1
+    load v0
+    if v0 != 0x72 then jump cmd_cat_check
+
+    v1 := vB
+    v1 += 0x01
+    i := LINE_BUF
+    i += v1
+    load v0
+    if v0 != 0x75 then jump cmd_unknown
+
+    v1 := vB
+    v1 += 0x02
+    i := LINE_BUF
+    i += v1
+    load v0
+    if v0 != 0x6E then jump cmd_unknown
+
+    jump cmd_run
+  }
+
+  label cmd_cat_check {
+    # "cat"
+    v1 := vB
+    i := LINE_BUF
+    i += v1
+    load v0
+    if v0 != 0x63 then jump cmd_unknown
+
+    v1 := vB
+    v1 += 0x01
+    i := LINE_BUF
+    i += v1
+    load v0
+    if v0 != 0x61 then jump cmd_unknown
+
+    v1 := vB
+    v1 += 0x02
+    i := LINE_BUF
+    i += v1
+    load v0
+    if v0 != 0x74 then jump cmd_unknown
+
+    jump cmd_cat
+  }
+
+  # ---- 4-char commands ----
+  label cmd_len4 {
+    # "help"
+    v1 := vB
+    i := LINE_BUF
+    i += v1
+    load v0
+    if v0 != 0x68 then jump cmd_exit_check
+
+    v1 := vB
+    v1 += 0x01
+    i := LINE_BUF
+    i += v1
+    load v0
+    if v0 != 0x65 then jump cmd_unknown
+
+    v1 := vB
+    v1 += 0x02
+    i := LINE_BUF
+    i += v1
+    load v0
+    if v0 != 0x6C then jump cmd_unknown
+
+    v1 := vB
+    v1 += 0x03
+    i := LINE_BUF
+    i += v1
+    load v0
+    if v0 != 0x70 then jump cmd_unknown
+
+    jump cmd_help
+  }
+
+  label cmd_exit_check {
+    # "exit"
+    v1 := vB
+    i := LINE_BUF
+    i += v1
+    load v0
+    if v0 != 0x65 then jump cmd_unknown
+
+    v1 := vB
+    v1 += 0x01
+    i := LINE_BUF
+    i += v1
+    load v0
+    if v0 != 0x78 then jump cmd_unknown
+
+    v1 := vB
+    v1 += 0x02
+    i := LINE_BUF
+    i += v1
+    load v0
+    if v0 != 0x69 then jump cmd_unknown
+
+    v1 := vB
+    v1 += 0x03
+    i := LINE_BUF
+    i += v1
+    load v0
+    if v0 != 0x74 then jump cmd_unknown
+
+    jump cmd_exit
+  }
+
+  # ---- command handlers ----
+  label cmd_help {
+    call print_help
+    jump repl
+  }
+
+  label cmd_exit {
+    v1 := 0x00
+    v2 := 0x00
+    call sys_exit
+  }
+
+  label cmd_exit_halt {
+    jump cmd_exit_halt
+  }
+
+  label cmd_ls {
+    # fs_list("", 0, DIR_BUF, DIR_MAX)
+    v1 := 0x08
+    v2 := 0x00
+    v3 := 0x00
+    v4 := 0x00
+    v5 := 0x09
+    v6 := 0x00
+    v7 := 0x00
+    v8 := 0x04
+    call sys_fs_list
+    if vF != 0x00 then jump cmd_error
+
+    v8 := v0
+    v7 := 0x00
+    v6 := 0x00
+  }
+
+  label ls_loop {
+    if v7 == v8 then jump repl
+
+    # name_len
+    i := DIR_BUF
+    i += v6
+    load v0
+    v4 := v0
+
+    # print name if len > 0
+    if v4 == 0x00 then jump ls_skip_name
+    v1 := 0x09
+    v2 := v6
+    v2 += 0x01
+    v3 := 0x00
+    call sys_write
+  }
+
+  label ls_skip_name {
+    # kind byte at offset + 65
+    v0 := v6
+    v0 += 0x41
+    i := DIR_BUF
+    i += v0
+    load v0
+    if v0 != 0x01 then jump ls_no_slash
+    call print_slash
+  }
+
+  label ls_no_slash {
+    call print_nl
+
+    v0 := 0x46
+    v6 += v0
+    v7 += 0x01
+    jump ls_loop
+  }
+
+  label cmd_run {
+    if vE == 0x00 then jump usage_run
+
+    # spawn(token2, len, pages=1)
+    v1 := 0x08
+    v2 := vD
+    v3 := 0x00
+    v4 := vE
+    v5 := 0x00
+    v6 := 0x01
+    call sys_spawn
+    if vF != 0x00 then jump cmd_error
+
+    # wait(pid)
+    v1 := 0x00
+    v2 := v0
+    call sys_wait
+    if vF != 0x00 then jump cmd_error
+    jump repl
+  }
+
+  label cmd_cat {
+    if vE == 0x00 then jump usage_cat
+
+    # fd = fs_open(token2, len, flags=0)
+    v1 := 0x08
+    v2 := vD
+    v3 := 0x00
+    v4 := vE
+    v5 := 0x00
+    v6 := 0x00
+    call sys_fs_open
+    if vF != 0x00 then jump cmd_error
+    v8 := v0
+  }
+
+  label cat_loop {
+    # fs_read(fd, FILE_BUF, FILE_CHUNK)
+    v1 := 0x00
+    v2 := v8
+    v3 := 0x0A
+    v4 := 0x20
+    v5 := 0x00
+    v6 := 0x40
+    call sys_fs_read
+    if vF != 0x00 then jump cmd_error
+    if v0 == 0x00 then jump cat_done
+
+    # write(FILE_BUF, bytes_read)
+    v1 := 0x0A
+    v2 := 0x20
+    v3 := 0x00
+    v4 := v0
+    call sys_write
+    jump cat_loop
+  }
+
+  label cat_done {
+    v1 := 0x00
+    v2 := v8
+    call sys_fs_close
+    jump repl
+  }
+
+  label usage_run {
+    call print_usage_run
+    jump repl
+  }
+
+  label usage_cat {
+    call print_usage_cat
+    jump repl
+  }
+
+  label cmd_unknown {
+    call print_unknown
+    jump repl
+  }
+
+  label cmd_error {
+    call print_error
+    jump repl
+  }
+
+  label read_error {
+    call print_error
+    jump repl
+  }
+
+  # ---- small output helpers ----
+  label print_prompt {
+    v1 := 0x0B
+    v2 := 0x00
+    v3 := 0x00
+    v4 := 0x02
+    call sys_write
+    return
+  }
+
+  label print_welcome {
+    v1 := 0x0B
+    v2 := 0x10
+    v3 := 0x00
+    v4 := 0x10
+    call sys_write
+    return
+  }
+
+  label print_help {
+    v1 := 0x0B
+    v2 := 0x40
+    v3 := 0x00
+    v4 := 0x56
+    call sys_write
+    return
+  }
+
+  label print_unknown {
+    v1 := 0x0B
+    v2 := 0xA0
+    v3 := 0x00
+    v4 := 0x10
+    call sys_write
+    return
+  }
+
+  label print_usage_run {
+    v1 := 0x0B
+    v2 := 0xB0
+    v3 := 0x00
+    v4 := 0x11
+    call sys_write
+    return
+  }
+
+  label print_usage_cat {
+    v1 := 0x0B
+    v2 := 0xC1
+    v3 := 0x00
+    v4 := 0x12
+    call sys_write
+    return
+  }
+
+  label print_error {
+    v1 := 0x0B
+    v2 := 0xD4
+    v3 := 0x00
+    v4 := 0x06
+    call sys_write
+    return
+  }
+
+  label print_slash {
+    v1 := 0x0B
+    v2 := 0xE0
+    v3 := 0x00
+    v4 := 0x01
+    call sys_write
+    return
+  }
+
+  label print_nl {
+    v1 := 0x0B
+    v2 := 0xE1
+    v3 := 0x00
+    v4 := 0x01
+    call sys_write
+    return
+  }
+
+  label read_line {
+    v1 := 0x08
+    v2 := 0x00
+    v3 := 0x00
+    v4 := 0x50
+    call sys_read
+    return
+  }
+}

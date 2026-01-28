@@ -8,13 +8,7 @@ use chip8_runtime::proc::proc::Proc;
 use chip8_runtime::shared_memory::shared_memory::SharedMemory;
 
 fn make_headless_display() -> DisplayWindow {
-    DisplayWindow {
-        window: None,
-        buf: vec![0; 64 * 32 * SCALE * SCALE],
-        key_state: 0xFF,
-        key_down: [false; 16],
-        last_key: None,
-    }
+    DisplayWindow::headless()
 }
 
 fn new_headless_proc() -> Proc {

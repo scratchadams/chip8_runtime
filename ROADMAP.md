@@ -146,6 +146,12 @@ SYS 0x11: read_key
 - CLI can list available ROMs from a host-backed filesystem.
 - CLI includes ROM-side helper routines for syscall frames and string parsing.
 
+### Current status
+
+- In progress: c8asm-based CLI ROM under `roms/cli/` with a syscall helper
+  library, display-backed console mode, and the initial command set
+  (`help`, `ls`, `run`, `cat`, `exit`).
+
 ---
 
 ## Phase 3: Filesystem Prototype (4-6 weeks)

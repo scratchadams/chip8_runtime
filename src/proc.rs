@@ -1,5 +1,5 @@
 pub mod proc {
-    use std::collections::HashMap;
+    use std::collections::{HashMap, VecDeque};
     use std::fs;
     use std::fs::File;
     use std::io::Error;
@@ -71,6 +71,12 @@ pub mod proc {
         Byte,
     }
 
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    pub enum ConsoleMode {
+        Host,
+        Display,
+    }
+
     pub struct Proc {
         pub regs: Registers,
         pub mem: Arc<Mutex<SharedMemory>>,
@@ -78,6 +84,8 @@ pub mod proc {
         pub page_table: Vec<u32>,
         pub vm_size: u32,
         pub input_mode: InputMode,
+        pub console_mode: ConsoleMode,
+        pub console_input: VecDeque<u8>,
         pub fds: HashMap<u8, File>,
         pub next_fd: u8,
         last_timer_tick: Instant,
@@ -104,6 +112,8 @@ pub mod proc {
                 page_table: page_table,
                 vm_size: vm_size,
                 input_mode: InputMode::Line,
+                console_mode: ConsoleMode::Host,
+                console_input: VecDeque::new(),
                 fds: HashMap::new(),
                 next_fd: 1,
                 last_timer_tick: Instant::now(),

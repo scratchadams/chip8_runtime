@@ -63,6 +63,12 @@ fn set_input_mode(proc: &mut Proc, mode: u16) {
     write_opcode(proc, proc.regs.PC, 0x0112);
 }
 
+fn set_console_mode(proc: &mut Proc, mode: u16) {
+    write_frame(proc, 0x370, &[mode]);
+    proc.regs.I = 0x370;
+    write_opcode(proc, proc.regs.PC, 0x0113);
+}
+
 fn read_dir_entries(proc: &mut Proc, base: u16, count: usize) -> Vec<(String, u8, u32)> {
     let mut entries = Vec::new();
     for idx in 0..count {
@@ -192,6 +198,75 @@ fn sys_read_rejects_invalid_buffer() {
     let proc = kernel.proc(pid).unwrap();
     assert_eq!(proc.regs.V[0], 0x02);
     assert_eq!(proc.regs.V[0xF], 1);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn sys_read_console_uses_console_input() {
+    set_headless();
+    let root = temp_root("read_console");
+    let mut kernel = make_kernel(&root);
+    let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
+
+    {
+        let proc = kernel.proc_mut(pid).unwrap();
+        set_console_mode(proc, 1);
+    }
+    let _ = kernel.step_proc(pid).unwrap();
+
+    {
+        let proc = kernel.proc_mut(pid).unwrap();
+        set_input_mode(proc, 1);
+    }
+    let _ = kernel.step_proc(pid).unwrap();
+
+    {
+        let proc = kernel.proc_mut(pid).unwrap();
+        write_frame(proc, 0x300, &[0x0340, 2]);
+        proc.regs.I = 0x300;
+        write_opcode(proc, proc.regs.PC, 0x0111);
+    }
+
+    kernel.push_console_input(pid, b"ok");
+    let outcome = kernel.step_proc(pid).unwrap();
+    assert_eq!(outcome, SyscallOutcome::Completed);
+
+    let proc = kernel.proc_mut(pid).unwrap();
+    let data = proc.read_bytes(0x340, 2).unwrap();
+    assert_eq!(data, b"ok");
+    assert_eq!(proc.regs.V[0], 2);
+    assert_eq!(proc.regs.V[0xF], 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn sys_write_console_updates_display() {
+    set_headless();
+    let root = temp_root("write_console");
+    let mut kernel = make_kernel(&root);
+    let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
+
+    {
+        let proc = kernel.proc_mut(pid).unwrap();
+        set_console_mode(proc, 1);
+    }
+    let _ = kernel.step_proc(pid).unwrap();
+
+    {
+        let proc = kernel.proc_mut(pid).unwrap();
+        proc.write_bytes(0x320, b"a").unwrap();
+        write_frame(proc, 0x300, &[0x0320, 1]);
+        proc.regs.I = 0x300;
+        write_opcode(proc, proc.regs.PC, 0x0110);
+    }
+
+    let outcome = kernel.step_proc(pid).unwrap();
+    assert_eq!(outcome, SyscallOutcome::Completed);
+
+    let proc = kernel.proc(pid).unwrap();
+    assert!(proc.display.buf.iter().any(|&px| px != 0));
 
     let _ = fs::remove_dir_all(root);
 }
