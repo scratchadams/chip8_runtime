@@ -59,6 +59,7 @@ cargo run -- --root /path/to/rom/root roms/cli/build/cli.ch8
 ```
 roms/cli/
   cli.c8s         # main program + command dispatch
+  cli.xx          # annotated ROM diagram (xx format, byte-for-byte)
   lib/sys.c8s     # syscall frame builders + wrappers
   lib/data.c8s    # fixed buffers + constant strings
   build.sh        # concatenates + assembles into build/cli.ch8
@@ -72,7 +73,25 @@ The files are concatenated in this order:
 
 ---
 
-## 3) c8asm Syntax (Quick Reference)
+## 3) xx Diagram (Readable ROM Bytes)
+
+`roms/cli/cli.xx` is a **living diagram** of the CLI ROM. It uses the `xx`
+format to annotate the exact bytes with box-drawing comments, syscall notes,
+and opcode descriptions. It is byte-for-byte identical to `build/cli.ch8`
+when assembled by `xx.py`.
+
+To regenerate a `.ch8` from the diagram:
+
+```
+python3 /path/to/xx.py roms/cli/cli.xx -o roms/cli/build/cli_from_xx.ch8
+```
+
+Note: `xx` treats some characters (like `-`) as comment delimiters, so long
+strings containing dashes are emitted as hex in the diagram to preserve bytes.
+
+---
+
+## 4) c8asm Syntax (Quick Reference)
 
 The CLI ROM is written in **structured blocks**. Each section has a fixed start
 address, and labels group instructions or data for readability.
@@ -116,7 +135,7 @@ Syntax is **case-sensitive**. Keywords are lowercase and registers are `v0..vF`
 
 ---
 
-## 4) Memory Map (Fixed Addresses)
+## 5) Memory Map (Fixed Addresses)
 
 Chip-8 has no general “load 16-bit pointer into I from registers” instruction.
 To keep the ROM simple, the CLI uses **fixed buffer addresses** with low bytes
@@ -148,7 +167,7 @@ chosen to avoid carry when adding offsets.
 
 ---
 
-## 5) Syscall Library (`lib/sys.c8s`)
+## 6) Syscall Library (`lib/sys.c8s`)
 
 The library contains two layers:
 
@@ -211,7 +230,7 @@ Wrappers provided:
 
 ---
 
-## 6) CLI Control Flow (High Level)
+## 7) CLI Control Flow (High Level)
 
 ```
 main:
@@ -244,7 +263,7 @@ for syscalls is as simple as setting `arg0_hi = 0x08` and `arg0_lo = tok_off`.
 
 ---
 
-## 7) CLI Command Notes
+## 8) CLI Command Notes
 
 ### `help`
 Prints `HELP_TEXT`.
@@ -282,7 +301,7 @@ process.
 
 ---
 
-## 8) Why the ROM is Structured This Way
+## 9) Why the ROM is Structured This Way
 
 The main goals were clarity and maintainability:
 
