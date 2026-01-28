@@ -3,6 +3,8 @@ pub mod display {
     use std::collections::VecDeque;
     use std::io::Error;
 
+    use chip8_core::device::device::DisplayDevice;
+    pub use chip8_core::device::device::DisplayMode;
     use crate::proc::proc::Registers;
 
     const WHITE: u32 = 0xFFFFFF;
@@ -22,12 +24,6 @@ pub mod display {
     const CELL_H: usize = 8;
     const TEXT_COLS: usize = CONSOLE_WIDTH / CELL_W;
     const TEXT_ROWS: usize = CONSOLE_HEIGHT / CELL_H;
-
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-    pub enum DisplayMode {
-        Chip8,
-        Console,
-    }
 
     #[derive(Clone)]
     struct Console {
@@ -395,6 +391,51 @@ pub mod display {
                     }
                 }
             }
+        }
+    }
+
+    impl DisplayDevice for DisplayWindow {
+        fn poll_input(&mut self, capture_text: bool) {
+            DisplayWindow::poll_input(self, capture_text);
+        }
+
+        fn clear_screen(&mut self) {
+            DisplayWindow::clear_screen(self);
+        }
+
+        fn draw_sprite(&mut self, regs: &mut Registers, sprite: &[u8], x_pos: u32, y_pos: u32) {
+            DisplayWindow::draw_sprite(self, regs, sprite, x_pos, y_pos);
+        }
+
+        fn is_key_down(&self, key: u8) -> bool {
+            self.key_down
+                .get(key as usize)
+                .copied()
+                .unwrap_or(false)
+        }
+
+        fn last_key(&self) -> Option<u8> {
+            self.last_key
+        }
+
+        fn drain_text_input(&mut self) -> Vec<u8> {
+            DisplayWindow::drain_text_input(self)
+        }
+
+        fn console_write(&mut self, data: &[u8]) {
+            DisplayWindow::console_write(self, data);
+        }
+
+        fn console_backspace(&mut self) {
+            DisplayWindow::console_backspace(self);
+        }
+
+        fn set_mode(&mut self, mode: DisplayMode) {
+            DisplayWindow::set_mode(self, mode);
+        }
+
+        fn mode(&self) -> DisplayMode {
+            self.mode
         }
     }
 

@@ -5,11 +5,13 @@ pub mod kernel {
     use std::path::{Component, Path, PathBuf};
     use std::sync::{Arc, Mutex};
     use std::thread;
-    use std::time::Duration;
+    use std::time::{Duration, Instant};
 
     use crate::display::display::{DisplayMode, DisplayWindow};
     use crate::proc::proc::{ConsoleMode, InputMode, Proc};
     use crate::shared_memory::shared_memory::SharedMemory;
+
+    pub use chip8_core::syscall::syscall::SyscallOutcome;
 
     const SYS_SPAWN: u16 = 0x0101;
     const SYS_EXIT: u16 = 0x0102;
@@ -38,14 +40,6 @@ pub mod kernel {
     const MAX_FILE_SIZE: u64 = 64 * 1024;
     const MAX_OPEN_FILES: usize = 32;
     const DIR_ENTRY_SIZE: usize = 1 + MAX_FILENAME_LEN + 1 + 4;
-
-    // syscall handlers return scheduling outcome for the caller.
-    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
-    pub enum SyscallOutcome {
-        Completed,
-        Blocked,
-        Yielded,
-    }
 
     pub type SyscallHandler =
         Arc<dyn Fn(&mut Kernel, u32, &mut Proc) -> SyscallOutcome + Send + Sync>;
@@ -101,15 +95,22 @@ pub mod kernel {
         waiting_for: Option<WaitTarget>,
     }
 
+    struct FdTable {
+        fds: HashMap<u8, fs::File>,
+        next_fd: u8,
+    }
+
     pub struct Kernel {
         mem: Arc<Mutex<SharedMemory>>,
         syscalls: SyscallTable,
         procs: HashMap<u32, ProcEntry>,
+        fd_tables: HashMap<u32, FdTable>,
         next_pid: u32,
         root_dir: PathBuf,
         input: VecDeque<u8>,
         pending_exit: HashMap<u32, u8>,
         pending_block: HashMap<u32, WaitTarget>,
+        last_timer_tick: Instant,
     }
 
     impl Kernel {
@@ -123,11 +124,13 @@ pub mod kernel {
                 mem,
                 syscalls: SyscallTable::new(),
                 procs: HashMap::new(),
+                fd_tables: HashMap::new(),
                 next_pid: 1,
                 root_dir: root,
                 input: VecDeque::new(),
                 pending_exit: HashMap::new(),
                 pending_block: HashMap::new(),
+                last_timer_tick: Instant::now(),
             })
         }
 
@@ -174,6 +177,13 @@ pub mod kernel {
                     state: ProcState::Running,
                     exit_code: None,
                     waiting_for: None,
+                },
+            );
+            self.fd_tables.insert(
+                pid,
+                FdTable {
+                    fds: HashMap::new(),
+                    next_fd: 1,
                 },
             );
             Ok(pid)
@@ -233,9 +243,10 @@ pub mod kernel {
                 return Ok(SyscallOutcome::Completed);
             }
 
+            let ticks = self.timer_ticks();
             let outcome = entry
                 .proc
-                .step(|id, proc| self.dispatch_syscall(pid, proc, id));
+                .step(ticks, |id, proc| self.dispatch_syscall(pid, proc, id));
 
             self.apply_pending(pid, &mut entry, outcome);
             self.procs.insert(pid, entry);
@@ -248,7 +259,8 @@ pub mod kernel {
                 .procs
                 .get_mut(&pid)
                 .ok_or_else(|| Error::new(ErrorKind::NotFound, "pid not found"))?;
-            entry.proc.load_program(rom_path.to_string_lossy().to_string())
+            let rom_bytes = fs::read(rom_path)?;
+            entry.proc.load_program_bytes(&rom_bytes)
         }
 
         /// run the cooperative scheduler until no runnable procs remain.
@@ -355,9 +367,10 @@ pub mod kernel {
                     return Ok(());
                 }
 
+                let ticks = self.timer_ticks();
                 let outcome = entry
                     .proc
-                    .step(|id, proc| self.dispatch_syscall(pid, proc, id));
+                    .step(ticks, |id, proc| self.dispatch_syscall(pid, proc, id));
 
                 self.apply_pending(pid, &mut entry, outcome);
                 let should_break = matches!(outcome, SyscallOutcome::Blocked | SyscallOutcome::Yielded);
@@ -383,12 +396,25 @@ pub mod kernel {
                 entry.exit_code = Some(code);
                 entry.waiting_for = None;
                 self.unblock_waiters(pid, code);
+                self.fd_tables.remove(&pid);
             } else if let Some(wait) = self.pending_block.remove(&pid) {
                 entry.state = ProcState::Blocked;
                 entry.waiting_for = Some(wait);
             } else if outcome == SyscallOutcome::Blocked {
                 entry.state = ProcState::Blocked;
             }
+        }
+
+        fn timer_ticks(&mut self) -> u32 {
+            let tick = Duration::from_micros(1_000_000 / 60);
+            let elapsed = self.last_timer_tick.elapsed();
+            if elapsed < tick {
+                return 0;
+            }
+
+            let ticks = (elapsed.as_nanos() / tick.as_nanos()) as u32;
+            self.last_timer_tick = self.last_timer_tick + (tick * ticks);
+            ticks
         }
 
         fn is_runnable(&self, pid: u32) -> bool {
@@ -1118,7 +1144,7 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_fs_open(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+    fn sys_fs_open(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
         let path_ptr = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
@@ -1177,7 +1203,16 @@ pub mod kernel {
             return SyscallOutcome::Completed;
         }
 
-        if proc.fds.len() >= MAX_OPEN_FILES {
+        let table = match kernel.fd_tables.get_mut(&pid) {
+            Some(val) => val,
+            None => {
+                proc.regs.V[0] = ERR_NOT_FOUND;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        if table.fds.len() >= MAX_OPEN_FILES {
             proc.regs.V[0] = ERR_TOO_MANY_OPEN;
             proc.regs.V[0xF] = 1;
             return SyscallOutcome::Completed;
@@ -1192,31 +1227,31 @@ pub mod kernel {
             }
         };
 
-        let mut fd = proc.next_fd;
+        let mut fd = table.next_fd;
         for _ in 0..=u8::MAX {
             if fd == 0 {
                 fd = 1;
             }
-            if !proc.fds.contains_key(&fd) {
+            if !table.fds.contains_key(&fd) {
                 break;
             }
             fd = fd.wrapping_add(1);
         }
-        if proc.fds.contains_key(&fd) {
+        if table.fds.contains_key(&fd) {
             proc.regs.V[0] = ERR_TOO_MANY_OPEN;
             proc.regs.V[0xF] = 1;
             return SyscallOutcome::Completed;
         }
 
-        proc.fds.insert(fd, file);
-        proc.next_fd = fd.wrapping_add(1);
+        table.fds.insert(fd, file);
+        table.next_fd = fd.wrapping_add(1);
 
         proc.regs.V[0] = fd;
         proc.regs.V[0xF] = 0;
         SyscallOutcome::Completed
     }
 
-    fn sys_fs_read(_kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+    fn sys_fs_read(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
         let fd = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val as u8,
             Err(_) => {
@@ -1242,7 +1277,16 @@ pub mod kernel {
             }
         };
 
-        let file = match proc.fds.get_mut(&fd) {
+        let table = match kernel.fd_tables.get_mut(&pid) {
+            Some(val) => val,
+            None => {
+                proc.regs.V[0] = ERR_NOT_FOUND;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        let file = match table.fds.get_mut(&fd) {
             Some(val) => val,
             None => {
                 proc.regs.V[0] = ERR_NOT_FOUND;
@@ -1273,7 +1317,7 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_fs_close(_kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+    fn sys_fs_close(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
         let fd = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val as u8,
             Err(_) => {
@@ -1282,7 +1326,15 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        if proc.fds.remove(&fd).is_none() {
+        let table = match kernel.fd_tables.get_mut(&pid) {
+            Some(val) => val,
+            None => {
+                proc.regs.V[0] = ERR_NOT_FOUND;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        if table.fds.remove(&fd).is_none() {
             proc.regs.V[0] = ERR_NOT_FOUND;
             proc.regs.V[0xF] = 1;
             return SyscallOutcome::Completed;

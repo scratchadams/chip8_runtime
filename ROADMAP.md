@@ -20,6 +20,62 @@ features.
 
 ---
 
+## Phase -1: QEMU/Standalone Prep (2-4 weeks)
+
+Goal: make the runtime architecture portable so a QEMU/bare-metal target can
+reuse the core logic without major rewrites.
+
+### 1) Split core from host runtime
+
+- Create a `chip8_core` crate (`no_std` + `alloc`) that owns:
+  - `Proc`, `Registers`, `chip8_engine`, `shared_memory`
+  - syscall ABI enums + error codes
+- Move ROM loading to a byte slice (`load_program_bytes`) rather than `std::fs`.
+- Remove direct `Instant` usage from core (inject ticks from the kernel).
+
+### 2) Device traits (Display/Input/FS)
+
+- Define minimal traits in core or a small `chip8_hal` module:
+  - `DisplayDevice`: sprite draw, clear, console write, mode switch
+  - `InputDevice`: poll, read text bytes
+  - `FsDevice`: list/open/read/close (host-backed now, disk-backed later)
+- Implement host adapters using minifb + std::fs.
+- Keep the syscall handlers in the host kernel for now; they call trait objects.
+
+### 3) Scheduler/timer decoupling
+
+- Replace `thread::sleep` loops with a kernel `tick()` call.
+- Provide a simple time source abstraction (monotonic ticks).
+- Wire timers in `Proc` to the kernel tick cadence (still ~60Hz).
+
+### 4) Reduce `std` surface area
+
+- Replace `HashMap` where feasible with `Vec<Option<_>>` or fixed tables.
+- Avoid `Arc<Mutex<...>>` in core; use plain refs with kernel ownership.
+- Gate host-only features behind `feature = "host"`.
+
+### 5) Build + test layout
+
+- Add a workspace layout: `chip8_core`, `chip8_runtime` (host), future `chip8_os`.
+- Keep existing tests by re-exporting core in the host crate.
+- Add a small “core” test suite that runs without minifb.
+
+### Prep milestone success
+
+- Core crate builds with `no_std` + `alloc` (host still uses std).
+- Host runtime still runs unchanged (CLI ROM, tests pass).
+- A kernel-facing trait API exists for display/input/fs.
+
+### Current status
+
+- In progress: `chip8_core` crate introduced with `SharedMemory`, `Proc`,
+  `Registers`, `chip8_engine`, and `SyscallOutcome` moved into it; host crate
+  re-exports keep existing paths working.
+- Done: initial `DisplayDevice` trait + `DisplayMode` moved into core.
+- Remaining: add input/fs device traits and reduce `std` usage in core.
+
+---
+
 ## Phase 0: Define the Extended Chip-8 Contract (1-2 weeks)
 
 Before writing new runtime features, define the interface.

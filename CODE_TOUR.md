@@ -10,11 +10,11 @@ both "what the runtime does" and "why the Rust looks the way it does."
 
 Rust modules map to files and control visibility.
 
-- `src/lib.rs` declares the public library surface:
-  - `pub mod shared_memory;`
-  - `pub mod proc;`
-  - `pub mod kernel;`
-  - etc.
+- `src/lib.rs` declares the public library surface for the host runtime and
+  re-exports core modules where appropriate.
+- The core interpreter code now lives in `chip8_core/` and is re-exported by
+  `src/proc.rs`, `src/shared_memory.rs`, and `src/chip8_engine.rs` so older
+  imports keep working.
 
 - `src/main.rs` is the binary entrypoint. It pulls in modules with `mod ...`
   and uses them directly. The binary focuses on runtime wiring (root dir,
@@ -25,7 +25,7 @@ Key Rust concept:
 - `mod x` only brings the module into scope for this crate.
 
 Where to look:
-- Module exports: `src/lib.rs`
+- Module exports: `src/lib.rs`, `chip8_core/src/lib.rs`
 - Binary wiring: `src/main.rs`
 
 ---
@@ -34,9 +34,10 @@ Where to look:
 
 This project uses plain structs for core runtime state:
 
-- `Proc` (in `src/proc.rs`): a single Chip-8 process.
+- `Proc` (in `chip8_core/src/proc.rs`, re-exported by `src/proc.rs`): a single Chip-8 process.
 - `Kernel` (in `src/kernel.rs`): the OS-like owner and scheduler.
-- `SharedMemory` (in `src/shared_memory.rs`): the physical memory arena.
+- `SharedMemory` (in `chip8_core/src/shared_memory.rs`, re-exported by `src/shared_memory.rs`):
+  the physical memory arena.
 
 Rust concept: **ownership**
 - `Kernel` owns the `HashMap<u32, ProcEntry>` for process storage.
@@ -46,13 +47,12 @@ Rust concept: **ownership**
 
 Example (Proc owns its fields):
 ```
-pub struct Proc {
+pub struct Proc<D: DisplayDevice> {
     pub regs: Registers,
     pub mem: Arc<Mutex<SharedMemory>>,
-    pub display: DisplayWindow,
+    pub display: D,
     pub page_table: Vec<u32>,
     pub vm_size: u32,
-    last_timer_tick: Instant,
 }
 ```
 
@@ -61,7 +61,8 @@ Why this matters in Rust:
 - The compiler enforces that only one mutable reference exists at a time.
 
 Where to look:
-- `Proc` and `Kernel` definitions in `src/proc.rs` and `src/kernel.rs`.
+- `Proc` definition in `chip8_core/src/proc.rs`
+- `Kernel` definition in `src/kernel.rs`
 
 ---
 
@@ -86,8 +87,8 @@ Inside `Proc::read_u8`:
   is dropped.
 
 Where to look:
-- Memory access helpers in `src/proc.rs`
-- `SharedMemory` in `src/shared_memory.rs`
+- Memory access helpers in `chip8_core/src/proc.rs`
+- `SharedMemory` in `chip8_core/src/shared_memory.rs`
 
 ---
 
@@ -118,7 +119,8 @@ Rust concept:
 - They are exhaustively matched, so the compiler ensures you handle all cases.
 
 Where to look:
-- `src/kernel.rs` for both enums and how they drive scheduling.
+- `chip8_core/src/syscall.rs` for `SyscallOutcome` (re-exported by `src/kernel.rs`)
+- `src/kernel.rs` for `ProcState` and scheduling logic.
 
 ---
 
@@ -145,7 +147,7 @@ In `opcode_0x0`, the dispatcher matches:
 - otherwise treat `0nnn` as a syscall if in range.
 
 Where to look:
-- `src/chip8_engine.rs`
+- `chip8_core/src/chip8_engine.rs` (re-exported by `src/chip8_engine.rs`)
 
 ---
 
@@ -213,7 +215,7 @@ Rust concept:
 - `?` propagates errors; explicit `return Err(...)` is used when needed.
 
 Where to look:
-- `src/shared_memory.rs` for allocation checks.
+- `chip8_core/src/shared_memory.rs` for allocation checks.
 - `src/kernel.rs` for syscall validation and IO errors.
 
 ---
@@ -235,7 +237,7 @@ Why this matters:
 - The kernel controls policy (blocking/yielding) without embedding it in the proc.
 
 Where to look:
-- `Proc::step` in `src/proc.rs`
+- `Proc::step` in `chip8_core/src/proc.rs`
 - `Kernel::run` and `Kernel::dispatch_syscall` in `src/kernel.rs`
 
 ---
@@ -339,11 +341,11 @@ dir, max file size).
 Rust concepts in play:
 - `std::fs::read_dir` for directory iteration.
 - `Path` + `Component` for safe path normalization.
-- `std::fs::File` stored inside each `Proc` as an FD table.
+- `std::fs::File` stored in a kernel-owned FD table keyed by pid.
 
 Where to look:
 - `src/kernel.rs` (`sys_fs_list`, `sys_fs_open`, `sys_fs_read`, `sys_fs_close`)
-- `src/proc.rs` (per-proc FD table)
+- `src/kernel.rs` (per-proc FD table)
 - `SYSCALLS.md` (ABI + record layout)
 
 ---
@@ -352,9 +354,9 @@ Where to look:
 
 Suggested reading order:
 
-1. `src/shared_memory.rs` (allocator + bounds checks)
-2. `src/proc.rs` (virtual memory + stepping)
-3. `src/chip8_engine.rs` (opcode dispatch)
+1. `chip8_core/src/shared_memory.rs` (allocator + bounds checks)
+2. `chip8_core/src/proc.rs` (virtual memory + stepping)
+3. `chip8_core/src/chip8_engine.rs` (opcode dispatch)
 4. `src/kernel.rs` (scheduler + syscalls)
 5. `SYSCALLS.md` (ABI details)
 6. `tests/syscalls.rs` (real syscall frames)
@@ -404,11 +406,11 @@ Instruction at PC:
 
 The kernel calls:
 ```
-proc.step(|id, proc| kernel.dispatch_syscall(pid, proc, id))
+proc.step(ticks, |id, proc| kernel.dispatch_syscall(pid, proc, id))
 ```
 
 Inside `Proc::step`:
-1. Polls input, ticks timers.
+1. Polls input, applies the tick count provided by the kernel.
 2. Reads two bytes from virtual memory at `PC` (0x0200).
 3. Builds the instruction `0x0110`.
 4. Extracts opcode nibble `0x0`.

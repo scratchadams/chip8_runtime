@@ -6,4 +6,10 @@ default-run = "chip8_runtime"
 
 [dependencies]
 minifb = "0.28.0"
-rand = "0.9.2"
+chip8_core = { path = "chip8_core" }
+
+[workspace]
+members = [
+    ".",
+    "chip8_core",
+]

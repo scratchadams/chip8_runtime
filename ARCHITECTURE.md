@@ -26,14 +26,22 @@ the shared memory allocator.
 
 ```
 chip8_runtime/
+├── chip8_core/
+│   └── src/
+│       ├── lib.rs             # core module exports
+│       ├── proc.rs            # Proc, Registers, stepping helpers
+│       ├── chip8_engine.rs    # opcode handlers and opcode field macros
+│       ├── shared_memory.rs   # SharedMemory allocator + read/write helpers
+│       ├── device.rs          # DisplayDevice trait + DisplayMode
+│       └── syscall.rs         # SyscallOutcome enum + ABI helpers
 ├── src/
 │   ├── main.rs            # binary entrypoint, builds Kernel and runs scheduler
 │   ├── lib.rs             # exports modules for tests/integration use
-│   ├── proc.rs            # Proc, Registers, and single-step execution
-│   ├── chip8_engine.rs    # opcode handlers and opcode field macros
+│   ├── proc.rs            # re-exports Proc/Registers with host DisplayWindow alias
+│   ├── chip8_engine.rs    # re-exports opcode handlers from chip8_core
 │   ├── display.rs         # DisplayWindow and sprite rendering
 │   ├── kernel.rs          # Kernel + syscall table + scheduler + syscalls
-│   └── shared_memory.rs   # SharedMemory allocator + read/write helpers
+│   └── shared_memory.rs   # re-exports SharedMemory from chip8_core
 └── tests/
     └── opcode_semantics.rs # unit-style opcode tests (headless)
 ```
@@ -44,20 +52,21 @@ chip8_runtime/
 
 ### 3.1 Proc and Registers
 
-`Proc` is the primary execution unit. It represents a single Chip-8 process
-with its own registers, display, and a page table that maps virtual pages into
-shared physical memory.
+`Proc` is the primary execution unit (defined in `chip8_core`). It represents
+a single Chip-8 process with its own registers, a pluggable display/input
+surface, and a page table that maps virtual pages into shared physical memory.
+The host runtime aliases `Proc` to use `DisplayWindow`.
 
 ```
-Proc
+Proc<D: DisplayDevice>
 ├── regs: Registers
 │   ├── V[16]  : general registers V0..VF
 │   ├── I      : index register
 │   ├── PC     : program counter (virtual, per-process)
 │   ├── SP     : stack pointer (virtual, per-process)
-│   ├── DT/ST  : delay/sound timers (ticked at ~60Hz in step)
+│   ├── DT/ST  : delay/sound timers (ticked via kernel-supplied 60Hz ticks)
 ├── mem: Arc<Mutex<SharedMemory>>
-├── display: DisplayWindow
+├── display: D
 ├── page_table: Vec<u32>   (physical bases per virtual page)
 ├── vm_size: u32           (virtual size in bytes)
 ```
@@ -85,7 +94,10 @@ virtual pages to physical bases via the per-proc page table.
 ### 3.3 DisplayWindow
 
 `DisplayWindow` stores a pixel buffer and (optionally) a live window handle.
-It renders a 64x32 logical Chip-8 display scaled by `SCALE` (currently 10).
+It implements `DisplayDevice` so the core interpreter can target different
+backends later. The Chip-8 64x32 grid is scaled into the higher-resolution
+console surface (`CHIP8_PIXEL_SCALE`, currently 10), then scaled again for
+window presentation (`SCALE`, currently 2).
 
 ```
 DisplayWindow
@@ -168,7 +180,7 @@ continues at the following instruction.
 
 ## 5) Opcode Dispatch Pattern
 
-`chip8_engine.rs` organizes opcode handlers by their top nibble. This is a
+`chip8_core/src/chip8_engine.rs` organizes opcode handlers by their top nibble. This is a
 common pattern in Chip-8 interpreters, since opcodes are grouped by their
 leading 4 bits.
 
@@ -230,14 +242,15 @@ lands in shared physical memory.
 
 ### 6.1 ROM Loading
 
-`Proc::load_program()` loads into **virtual addresses**:
+`Proc::load_program_bytes()` loads into **virtual addresses**:
 
 ```
 0x000 .. 0x050  : font sprites (80 bytes)
 0x200 ..        : program text
 ```
 
-This matches standard Chip-8 memory layout (program entry at 0x200).
+The host `Kernel` reads the ROM from disk and passes the bytes into core so
+the interpreter stays file-system agnostic.
 
 ### 6.2 Stack
 
@@ -445,8 +458,8 @@ SharedMemory.phys_mem[phys]
    consider fragmentation/compaction.
 
 5. **Display and input abstraction**  
-   If you plan to support other frontends (SDL, web), consider a trait or
-   interface for display/input backends.
+   The core now defines a `DisplayDevice` trait; expand it with input/fs traits
+   and move more host-only logic out of the interpreter.
 
 6. **Super-CHIP/XO-CHIP extensions**  
    The Timendus suite includes scrolling and high‑res tests. If you want to pass
@@ -460,13 +473,30 @@ SharedMemory.phys_mem[phys]
 
 ## 12) Summary
 
-This runtime is structured around a clear separation of concerns:
+This runtime is structured around a clear separation of concerns (with core
+logic now living in `chip8_core`):
 
 - `Proc` handles CPU state and execution.
 - `chip8_engine` handles opcode semantics.
-- `DisplayWindow` handles graphics and input.
+- `DisplayWindow` handles graphics and input (implements `DisplayDevice`).
 - `SharedMemory` handles per-process memory allocation.
 
 The headless test path and opcode semantics suite make the core CPU logic
 observable and reliable. The next major step is implementing timing behavior
 and optional CHIP-8 extensions if you want to pass the full suite of tests.
+
+---
+
+## 9) QEMU/Standalone Prep (Planned)
+
+To move from a hosted runtime to a standalone OS target (QEMU), we will
+separate the core execution engine from host dependencies and introduce device
+abstractions:
+
+- **Core split**: new `chip8_core` crate (`no_std` + `alloc`) that owns
+  `Proc`, `Registers`, `chip8_engine`, and `SharedMemory`.
+- **Device traits**: display/input/fs traits that the host runtime and a future
+  QEMU kernel can implement independently.
+- **Time source**: explicit tick injection instead of `Instant`/`sleep`.
+- **Std boundary**: host-only code stays behind feature flags, with a clean
+  interface for `chip8_os` to reuse core logic.

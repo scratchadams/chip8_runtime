@@ -37,7 +37,7 @@ fn write_byte(proc: &mut Proc, addr: u16, value: u8) {
 fn exec_opcode(proc: &mut Proc, opcode: u16) {
     let pc = proc.regs.PC;
     write_opcode(proc, pc, opcode);
-    let _ = proc.step(|_, _| Ok(SyscallOutcome::Completed));
+    let _ = proc.step(0, |_, _| Ok(SyscallOutcome::Completed));
 }
 
 fn exec_opcode_with_dispatch<F>(proc: &mut Proc, opcode: u16, mut dispatch: F)
@@ -46,7 +46,7 @@ where
 {
     let pc = proc.regs.PC;
     write_opcode(proc, pc, opcode);
-    let _ = proc.step(|id, proc| dispatch(id, proc));
+    let _ = proc.step(0, |id, proc| dispatch(id, proc));
 }
 
 fn count_on_pixels(proc: &Proc) -> usize {
@@ -82,7 +82,7 @@ fn opcode_00ee_returns_to_caller() {
     assert_eq!(ret_lo, 0x02);
 
     write_opcode(&mut proc, 0x300, 0x00EE);
-    let _ = proc.step(|_, _| Ok(SyscallOutcome::Completed));
+    let _ = proc.step(0, |_, _| Ok(SyscallOutcome::Completed));
     assert_eq!(proc.regs.PC, 0x202);
     assert_eq!(proc.regs.SP, 0x1000);
 }
