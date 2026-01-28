@@ -237,16 +237,12 @@ pub mod display {
             let mut next_key_down = self.key_down;
             let mut next_last_key = None;
             let mut text_bytes = Vec::new();
+            let capture_text = capture_text || self.mode == DisplayMode::Console;
 
             if let Some(window) = self.window.as_mut() {
                 let _ = window.update();
                 if capture_text {
-                    let shift = window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
-                    for key in window.get_keys_pressed(KeyRepeat::Yes) {
-                        if let Some(byte) = key_to_ascii(key, shift) {
-                            text_bytes.push(byte);
-                        }
-                    }
+                    text_bytes.extend(collect_text_input(window));
                 }
                 for (key, chip) in mapping {
                     let down = window.is_key_down(key);
@@ -371,6 +367,10 @@ pub mod display {
 
             if let Some(window) = self.window.as_mut() {
                 let _ = window.update_with_buffer(&self.buf, WINDOW_WIDTH, WINDOW_HEIGHT);
+                let text_bytes = collect_text_input(window);
+                if !text_bytes.is_empty() {
+                    self.text_input.extend(text_bytes);
+                }
             }
         }
 
@@ -464,6 +464,17 @@ pub mod display {
             rows[6] << 2,
             0x00,
         ]
+    }
+
+    fn collect_text_input(window: &mut Window) -> Vec<u8> {
+        let mut text_bytes = Vec::new();
+        let shift = window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
+        for key in window.get_keys_pressed(KeyRepeat::Yes) {
+            if let Some(byte) = key_to_ascii(key, shift) {
+                text_bytes.push(byte);
+            }
+        }
+        text_bytes
     }
 
     fn key_to_ascii(key: Key, shift: bool) -> Option<u8> {
