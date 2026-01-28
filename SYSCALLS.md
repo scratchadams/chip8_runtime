@@ -241,7 +241,9 @@ VF = 0 on success, 1 on error
 ```
 
 Notes:
-- Display mode renders text into the Chip-8 window using an 8x4 character grid.
+- Display mode renders text into the Chip-8 window using an 80x40 character grid
+  (640x320 logical pixels, 8x8 font).
+- Sprite drawing is ignored while in console mode.
 - Input comes from the window keyboard and is echoed to the console.
 
 ---

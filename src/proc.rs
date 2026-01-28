@@ -225,7 +225,8 @@ pub mod proc {
             F: FnMut(u16, &mut Proc) -> Result<SyscallOutcome, Error>,
         {
             // poll input each cycle so Ex9E/ExA1/Fx0A see live key states.
-            self.display.poll_input();
+            // text capture is handled by the kernel when a proc opts into console mode.
+            self.display.poll_input(false);
             self.tick_timers();
 
             let pc = self.regs.PC as usize;

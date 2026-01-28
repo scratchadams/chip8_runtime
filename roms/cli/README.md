@@ -17,7 +17,8 @@ exit
 
 The ROM uses **line-oriented** input mode and parses a single command line into
 `tok1` (the command) and an optional `tok2` argument. It also opts into the
-display-backed console so input/output happens inside the Chip-8 window.
+display-backed console so input/output happens inside the Chip-8 window using
+an 80x40 text grid (640x320 logical pixels).
 
 ---
 

@@ -7,7 +7,7 @@ pub mod kernel {
     use std::thread;
     use std::time::Duration;
 
-    use crate::display::display::DisplayWindow;
+    use crate::display::display::{DisplayMode, DisplayWindow};
     use crate::proc::proc::{ConsoleMode, InputMode, Proc};
     use crate::shared_memory::shared_memory::SharedMemory;
 
@@ -314,8 +314,8 @@ pub mod kernel {
                     None => continue,
                 };
 
-                if entry.proc.console_mode == ConsoleMode::Display {
-                    entry.proc.display.poll_input();
+                if entry.proc.console_mode == ConsoleMode::Display && entry.state == ProcState::Blocked {
+                    entry.proc.display.poll_input(true);
                     let data = entry.proc.display.drain_text_input();
                     if !data.is_empty() {
                         self.apply_console_input(&mut entry.proc, &data);
@@ -983,8 +983,14 @@ pub mod kernel {
         };
 
         proc.console_mode = mode;
-        if mode == ConsoleMode::Display {
-            proc.display.console_reset();
+        proc.console_input.clear();
+        match mode {
+            ConsoleMode::Display => {
+                proc.display.set_mode(DisplayMode::Console);
+            }
+            ConsoleMode::Host => {
+                proc.display.set_mode(DisplayMode::Chip8);
+            }
         }
         proc.regs.V[0xF] = 0;
         SyscallOutcome::Completed

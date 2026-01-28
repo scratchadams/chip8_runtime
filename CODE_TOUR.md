@@ -539,7 +539,8 @@ to build syscall frames, call the kernel, and parse input without hunting
 through host code.
 
 The CLI ROM opts into the **display-backed console** (`console_mode = 1`), so
-all input/output occurs inside the Chip-8 window using an 8x4 character grid.
+all input/output occurs inside the Chip-8 window using an 80x40 character grid
+(640x320 logical pixels).
 
 ### 16.1 File Layout
 

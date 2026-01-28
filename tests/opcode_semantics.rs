@@ -1,6 +1,6 @@
 use std::sync::{Arc, Mutex};
 
-use chip8_runtime::display::display::{DisplayWindow, SCALE};
+use chip8_runtime::display::display::{DisplayWindow, CHIP8_PIXEL_SCALE, SCALE};
 use std::io::{Error, ErrorKind};
 
 use chip8_runtime::kernel::kernel::SyscallOutcome;
@@ -288,7 +288,10 @@ fn opcode_dxyn_draws_and_collides() {
 
     exec_opcode(&mut proc, 0xD011);
     assert_eq!(proc.regs.PC, 0x202);
-    assert_eq!(count_on_pixels(&proc), 4 * SCALE * SCALE);
+    assert_eq!(
+        count_on_pixels(&proc),
+        4 * SCALE * SCALE * CHIP8_PIXEL_SCALE * CHIP8_PIXEL_SCALE
+    );
 
     proc.regs.PC = 0x200;
     exec_opcode(&mut proc, 0xD011);

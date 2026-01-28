@@ -8,17 +8,26 @@ pub mod display {
     const WHITE: u32 = 0xFFFFFF;
     const BLACK: u32 = 0x000000;
 
-    const LOGICAL_WIDTH: usize = 64;
-    const LOGICAL_HEIGHT: usize = 32;
-    pub const SCALE: usize = 10;
+    const CHIP8_WIDTH: usize = 64;
+    const CHIP8_HEIGHT: usize = 32;
+    const CONSOLE_WIDTH: usize = 640;
+    const CONSOLE_HEIGHT: usize = 320;
+    pub const SCALE: usize = 2;
+    pub const CHIP8_PIXEL_SCALE: usize = CONSOLE_WIDTH / CHIP8_WIDTH;
 
-    const WIDTH: u32 = (LOGICAL_WIDTH * SCALE) as u32;
-    const HEIGHT: u32 = (LOGICAL_HEIGHT * SCALE) as u32;
+    const WINDOW_WIDTH: usize = CONSOLE_WIDTH * SCALE;
+    const WINDOW_HEIGHT: usize = CONSOLE_HEIGHT * SCALE;
 
-    const TEXT_COLS: usize = 8;
-    const TEXT_ROWS: usize = 4;
     const CELL_W: usize = 8;
     const CELL_H: usize = 8;
+    const TEXT_COLS: usize = CONSOLE_WIDTH / CELL_W;
+    const TEXT_ROWS: usize = CONSOLE_HEIGHT / CELL_H;
+
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    pub enum DisplayMode {
+        Chip8,
+        Console,
+    }
 
     #[derive(Clone)]
     struct Console {
@@ -125,20 +134,23 @@ pub mod display {
         pub last_key: Option<u8>,
         text_input: VecDeque<u8>,
         console: Console,
+        mode: DisplayMode,
     }
 
     impl DisplayWindow {
-        // buffer is pre-scaled (WIDTH x HEIGHT) to avoid per-frame resize.
+        // buffer is pre-scaled (WINDOW_WIDTH x WINDOW_HEIGHT).
         pub fn new() -> Result<DisplayWindow, Error> {
             let mut window = Window::new(
-                "Chip8 Process", 
-                WIDTH as usize, 
-                HEIGHT as usize, 
+                "Chip8 Process",
+                WINDOW_WIDTH,
+                WINDOW_HEIGHT,
                 WindowOptions::default()
             ).unwrap();
 
-            let buf: Vec<u32> = vec![0; (WIDTH * HEIGHT) as usize];
-            window.update_with_buffer(&buf, WIDTH as usize, HEIGHT as usize).unwrap();
+            let buf: Vec<u32> = vec![0; WINDOW_WIDTH * WINDOW_HEIGHT];
+            window
+                .update_with_buffer(&buf, WINDOW_WIDTH, WINDOW_HEIGHT)
+                .unwrap();
             
             Ok(DisplayWindow {
                 window: Some(window),
@@ -148,6 +160,7 @@ pub mod display {
                 last_key: None,
                 text_input: VecDeque::new(),
                 console: Console::new(TEXT_COLS, TEXT_ROWS),
+                mode: DisplayMode::Chip8,
             })
         }
 
@@ -155,12 +168,13 @@ pub mod display {
         pub fn headless() -> DisplayWindow {
             DisplayWindow {
                 window: None,
-                buf: vec![0; (WIDTH * HEIGHT) as usize],
+                buf: vec![0; WINDOW_WIDTH * WINDOW_HEIGHT],
                 key_state: 0xFF,
                 key_down: [false; 16],
                 last_key: None,
                 text_input: VecDeque::new(),
                 console: Console::new(TEXT_COLS, TEXT_ROWS),
+                mode: DisplayMode::Chip8,
             }
         }
 
@@ -174,16 +188,44 @@ pub mod display {
         }
 
         pub fn clear_screen(&mut self) {
-            // this clears the backing buffer; caller updates the window.
-            self.buf
-                .iter_mut()
-                .for_each(|x| *x = 0);
+            match self.mode {
+                DisplayMode::Console => {
+                    self.console.clear();
+                    self.render_console();
+                }
+                DisplayMode::Chip8 => {
+                    self.buf.iter_mut().for_each(|x| *x = 0);
+                    if let Some(window) = self.window.as_mut() {
+                        let _ = window.update_with_buffer(&self.buf, WINDOW_WIDTH, WINDOW_HEIGHT);
+                    }
+                }
+            }
+        }
+
+        pub fn set_mode(&mut self, mode: DisplayMode) {
+            if self.mode == mode {
+                return;
+            }
+            self.mode = mode;
+            self.text_input.clear();
+            match self.mode {
+                DisplayMode::Console => {
+                    self.console.clear();
+                    self.render_console();
+                }
+                DisplayMode::Chip8 => {
+                    self.buf.iter_mut().for_each(|x| *x = 0);
+                    if let Some(window) = self.window.as_mut() {
+                        let _ = window.update_with_buffer(&self.buf, WINDOW_WIDTH, WINDOW_HEIGHT);
+                    }
+                }
+            }
         }
 
         // poll_input captures the current pressed state of all 16 CHIP-8 keys.
         // example - if keys 0x3 and 0xA are both down, key_down[0x3] and
         // key_down[0xA] are true, and last_key becomes the first one found in the scan order.
-        pub fn poll_input(&mut self) {
+        pub fn poll_input(&mut self, capture_text: bool) {
             let mapping: [(Key, u8); 16] = [
                 (Key::Key1, 0x1), (Key::Key2, 0x2), (Key::Key3, 0x3), (Key::Key4, 0xC),
                 (Key::Q,    0x4), (Key::W,    0x5), (Key::E,    0x6), (Key::R,    0xD),
@@ -198,10 +240,12 @@ pub mod display {
 
             if let Some(window) = self.window.as_mut() {
                 let _ = window.update();
-                let shift = window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
-                for key in window.get_keys_pressed(KeyRepeat::Yes) {
-                    if let Some(byte) = key_to_ascii(key, shift) {
-                        text_bytes.push(byte);
+                if capture_text {
+                    let shift = window.is_key_down(Key::LeftShift) || window.is_key_down(Key::RightShift);
+                    for key in window.get_keys_pressed(KeyRepeat::Yes) {
+                        if let Some(byte) = key_to_ascii(key, shift) {
+                            text_bytes.push(byte);
+                        }
                     }
                 }
                 for (key, chip) in mapping {
@@ -221,7 +265,9 @@ pub mod display {
 
             self.key_down = next_key_down;
             self.last_key = next_last_key;
-            self.text_input.extend(text_bytes);
+            if capture_text {
+                self.text_input.extend(text_bytes);
+            }
 
             // keep key_state for compatibility; 0xFF means "no key".
             self.key_state = self.last_key.unwrap_or(0xFF);
@@ -235,13 +281,10 @@ pub mod display {
             data
         }
 
-        pub fn console_reset(&mut self) {
-            self.console.clear();
-            self.clear_screen();
-            self.render_console();
-        }
-
         pub fn console_write(&mut self, data: &[u8]) {
+            if self.mode != DisplayMode::Console {
+                return;
+            }
             for &byte in data {
                 self.console.put_char(byte);
             }
@@ -249,50 +292,68 @@ pub mod display {
         }
 
         pub fn console_backspace(&mut self) {
+            if self.mode != DisplayMode::Console {
+                return;
+            }
             self.console.backspace();
             self.render_console();
         }
 
         // draw_sprite XORs sprite bits and sets VF on collision.
         pub fn draw_sprite(&mut self, regs: &mut Registers, sprite: &[u8], x_pos: u32, y_pos: u32) {
+            if self.mode == DisplayMode::Console {
+                return;
+            }
+
             regs.V[0xF] = 0;
 
             for (byte_index, byte) in sprite.iter().enumerate() {
                 let byte = *byte;
 
                 for bit_index in 0..8 {
-                    let x = (x_pos + bit_index) % LOGICAL_WIDTH as u32;
-                    let y = (y_pos + byte_index as u32) % LOGICAL_HEIGHT as u32;
-
                     let sprite_pixel = (byte >> (7 - bit_index)) & 1;
+                    if sprite_pixel == 0 {
+                        continue;
+                    }
 
-                    for dy in 0..SCALE {
-                        for dx in 0..SCALE {
-                            let scaled_x = (x as usize * SCALE) + dx;
-                            let scaled_y = (y as usize * SCALE) + dy;
-                            let pos = scaled_y * WIDTH as usize + scaled_x;
+                    let chip_x = ((x_pos as usize) + bit_index) % CHIP8_WIDTH;
+                    let chip_y = ((y_pos as usize) + byte_index) % CHIP8_HEIGHT;
+                    let base_x = chip_x * CHIP8_PIXEL_SCALE;
+                    let base_y = chip_y * CHIP8_PIXEL_SCALE;
 
-                            let current_pixel = if self.buf[pos] == WHITE { 1 } else { 0 };
-                            let new_pixel = current_pixel ^ sprite_pixel;
-
-                            if current_pixel == 1 && new_pixel == 0 {
-                                regs.V[0xF] = 1;
-                            }
-
-                            self.buf[pos] = if new_pixel == 1 { WHITE } else { BLACK };
-
-                            /*self
-                                .window
-                                .update_with_buffer(&self.buf, WIDTH as usize, HEIGHT as usize)
-                                .unwrap();*/
+                    for dy in 0..CHIP8_PIXEL_SCALE {
+                        for dx in 0..CHIP8_PIXEL_SCALE {
+                            self.toggle_pixel(regs, base_x + dx, base_y + dy);
                         }
                     }
                 }
             }
+
             if let Some(window) = self.window.as_mut() {
-                window
-                    .update_with_buffer(&self.buf, WIDTH as usize, HEIGHT as usize)
-                    .unwrap();
+                let _ = window.update_with_buffer(&self.buf, WINDOW_WIDTH, WINDOW_HEIGHT);
+            }
+        }
+
+        fn toggle_pixel(&mut self, regs: &mut Registers, logical_x: usize, logical_y: usize) {
+            let phys_x = logical_x * SCALE;
+            let phys_y = logical_y * SCALE;
+            let pos = phys_y * WINDOW_WIDTH + phys_x;
+
+            let current_pixel = if self.buf[pos] == WHITE { 1 } else { 0 };
+            let new_pixel = current_pixel ^ 1;
+
+            if current_pixel == 1 && new_pixel == 0 {
+                regs.V[0xF] = 1;
+            }
+
+            let color = if new_pixel == 1 { WHITE } else { BLACK };
+            for dy in 0..SCALE {
+                for dx in 0..SCALE {
+                    let scaled_x = phys_x + dx;
+                    let scaled_y = phys_y + dy;
+                    let idx = scaled_y * WINDOW_WIDTH + scaled_x;
+                    self.buf[idx] = color;
+                }
             }
         }
     }
@@ -309,7 +370,7 @@ pub mod display {
             }
 
             if let Some(window) = self.window.as_mut() {
-                let _ = window.update_with_buffer(&self.buf, WIDTH as usize, HEIGHT as usize);
+                let _ = window.update_with_buffer(&self.buf, WINDOW_WIDTH, WINDOW_HEIGHT);
             }
         }
 
@@ -328,7 +389,7 @@ pub mod display {
                         for dx in 0..SCALE {
                             let scaled_x = px * SCALE + dx;
                             let scaled_y = py * SCALE + dy;
-                            let pos = scaled_y * WIDTH as usize + scaled_x;
+                            let pos = scaled_y * WINDOW_WIDTH + scaled_x;
                             self.buf[pos] = color;
                         }
                     }
