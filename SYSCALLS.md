@@ -80,6 +80,10 @@ Error codes currently in use:
 0x0121 = fs_open
 0x0122 = fs_read
 0x0123 = fs_close
+0x0130 = dbg_list
+0x0131 = dbg_regs
+0x0132 = dbg_mem_read
+0x0133 = dbg_mem_write
 ```
 
 ---
@@ -328,6 +332,92 @@ arg0 = fd
 
 Returns:
 ```
+VF = 0 on success, 1 on error
+```
+
+---
+
+## 0x0130..0x013F — Debugger Interface (Initial ABI)
+
+These syscalls provide an in-band debug interface so a Chip-8 ROM can inspect
+other running processes. All operations are performed by the kernel; the debug
+ROM provides a target pid and buffers in its own memory.
+
+### 0x0130 dbg_list
+
+Args:
+```
+arg0 = out buffer pointer
+arg1 = max entries
+```
+
+Record layout (8 bytes per entry):
+```
+pid_be   : u32
+state    : u8   (0 = running, 1 = blocked, 2 = exited)
+exit     : u8   (0 if none)
+reserved : u16  (0)
+```
+
+Returns:
+```
+V0 = entries written (low 8 bits)
+VF = 0 on success, 1 on error
+```
+
+### 0x0131 dbg_regs
+
+Args:
+```
+arg0 = target pid (low 16 bits)
+arg1 = out buffer pointer
+```
+
+Record layout (24 bytes):
+```
+PC_be : u16
+SP_be : u16
+I_be  : u16
+V[16] : u8 x16
+DT    : u8
+ST    : u8
+```
+
+Returns:
+```
+V0 = bytes written (24)
+VF = 0 on success, 1 on error
+```
+
+### 0x0132 dbg_mem_read
+
+Args:
+```
+arg0 = target pid (low 16 bits)
+arg1 = target address (virtual)
+arg2 = length
+arg3 = out buffer pointer
+```
+
+Returns:
+```
+V0 = bytes read (low 8 bits)
+VF = 0 on success, 1 on error
+```
+
+### 0x0133 dbg_mem_write
+
+Args:
+```
+arg0 = target pid (low 16 bits)
+arg1 = target address (virtual)
+arg2 = length
+arg3 = input buffer pointer
+```
+
+Returns:
+```
+V0 = bytes written (low 8 bits)
 VF = 0 on success, 1 on error
 ```
 

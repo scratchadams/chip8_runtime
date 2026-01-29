@@ -14,9 +14,12 @@ features.
 
 - Keep normal Chip-8 ROMs running unchanged.
 - Add explicit extension opcodes or a syscall trap to avoid ambiguity.
-- Start with cooperative scheduling; add preemption only when needed.
+- Start with cooperative scheduling, but design the scheduler so preemption and
+  policy tuning are straightforward.
 - Favor a stable ABI (register-based conventions) for syscalls.
 - Grow memory and features incrementally to avoid breaking tests.
+- Treat debuggability as a first-class capability (traceability, introspection,
+  and debugger-friendly interfaces from day one).
 
 ---
 
@@ -167,6 +170,42 @@ SYS 0x04: yield
 ### Milestone success
 
 - Syscall dispatch is stable and tested without requiring a full CLI ROM.
+
+---
+
+## Phase 1.5: Scheduler + Context Switching + Debug Hooks (2-4 weeks)
+
+Goal: formalize process scheduling and context-switch semantics in the host
+runtime, with preemption support and debugger-friendly surfaces.
+
+### Required runtime changes
+
+- Define an explicit `Context` snapshot (PC, SP, I, V regs, DT/ST) and a clear
+  save/restore boundary.
+- Separate scheduler policy from execution: the scheduler decides *when* to run,
+  the engine decides *what happens* during a step.
+- Implement preemption via time-sliced stepping (e.g., N instruction steps per
+  timeslice) while keeping 60Hz timer ticks stable.
+- Make scheduling policy pluggable (start with round-robin; leave hooks for
+  priority, fairness, or tuneable policies).
+- Add structured trace hooks for state transitions (Running/Blocked/Exited,
+  context switch boundaries, syscall yield/block points).
+
+### Debuggability foundations (syscall-based)
+
+- Add a **debug syscall namespace** (tentative IDs in 0x0130..0x013F) for:
+  - list processes
+  - read/write registers
+  - read/write memory (range)
+  - structured dumps (full register state, process info, memory range)
+- Define a syscall ABI and record layout in `SYSCALLS.md`.
+- Create a minimal “debugger ROM” that attaches to a target pid and performs
+  read-only inspection (write support comes next).
+
+### Milestone success
+
+- Preemptive scheduling works with deterministic time slices.
+- A debug ROM can attach to a running process and dump register + memory ranges.
 
 ---
 

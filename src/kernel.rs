@@ -28,6 +28,10 @@ pub mod kernel {
     const SYS_FS_OPEN: u16 = 0x0121;
     const SYS_FS_READ: u16 = 0x0122;
     const SYS_FS_CLOSE: u16 = 0x0123;
+    const SYS_DBG_LIST: u16 = 0x0130;
+    const SYS_DBG_REGS: u16 = 0x0131;
+    const SYS_DBG_MEM_READ: u16 = 0x0132;
+    const SYS_DBG_MEM_WRITE: u16 = 0x0133;
 
     const ERR_INVALID: u8 = 0x02;
     const ERR_IO: u8 = 0x03;
@@ -43,6 +47,9 @@ pub mod kernel {
     const MAX_FILE_SIZE: u64 = 64 * 1024;
     const MAX_OPEN_FILES: usize = 32;
     const DIR_ENTRY_SIZE: usize = 1 + MAX_FILENAME_LEN + 1 + 4;
+    const DBG_PROC_RECORD_SIZE: usize = 8;
+    const DBG_REGS_SIZE: usize = 24;
+    const DEFAULT_TIMESLICE_STEPS: u32 = 200;
     const DEBUG_INPUT_ENV: &str = "CHIP8_DEBUG_INPUT";
 
     pub type SyscallHandler =
@@ -115,6 +122,7 @@ pub mod kernel {
         pending_exit: HashMap<u32, u8>,
         pending_block: HashMap<u32, WaitTarget>,
         last_timer_tick: Instant,
+        timeslice_steps: u32,
     }
 
     impl Kernel {
@@ -135,6 +143,7 @@ pub mod kernel {
                 pending_exit: HashMap::new(),
                 pending_block: HashMap::new(),
                 last_timer_tick: Instant::now(),
+                timeslice_steps: DEFAULT_TIMESLICE_STEPS,
             })
         }
 
@@ -152,6 +161,10 @@ pub mod kernel {
             self.register_syscall(SYS_FS_OPEN, sys_fs_open)?;
             self.register_syscall(SYS_FS_READ, sys_fs_read)?;
             self.register_syscall(SYS_FS_CLOSE, sys_fs_close)?;
+            self.register_syscall(SYS_DBG_LIST, sys_dbg_list)?;
+            self.register_syscall(SYS_DBG_REGS, sys_dbg_regs)?;
+            self.register_syscall(SYS_DBG_MEM_READ, sys_dbg_mem_read)?;
+            self.register_syscall(SYS_DBG_MEM_WRITE, sys_dbg_mem_write)?;
             Ok(())
         }
 
@@ -214,6 +227,11 @@ pub mod kernel {
         ) -> Result<u32, Error> {
             let path = self.resolve_rom_path(name)?;
             self.spawn_proc_with_rom(display, pages, &path)
+        }
+
+        /// set the number of instruction steps each proc gets per scheduling slice.
+        pub fn set_timeslice_steps(&mut self, steps: u32) {
+            self.timeslice_steps = steps.max(1);
         }
 
         #[allow(dead_code)]
@@ -389,7 +407,13 @@ pub mod kernel {
         }
 
         fn run_proc_until_yield_or_block(&mut self, pid: u32) -> Result<(), Error> {
+            let slice = self.timeslice_steps.max(1);
+            let mut steps = 0u32;
             loop {
+                if steps >= slice {
+                    break;
+                }
+                steps = steps.saturating_add(1);
                 let mut entry = self
                     .procs
                     .remove(&pid)
@@ -1365,6 +1389,227 @@ pub mod kernel {
             proc.regs.V[0xF] = 1;
             return SyscallOutcome::Completed;
         }
+        proc.regs.V[0xF] = 0;
+        SyscallOutcome::Completed
+    }
+
+    fn sys_dbg_list(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let out_ptr = match Kernel::syscall_arg(proc, 0) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let max_entries = match Kernel::syscall_arg(proc, 1) {
+            Ok(val) => val as usize,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        let mut pids: Vec<u32> = kernel.procs.keys().copied().collect();
+        pids.sort_unstable();
+        let mut count = 0usize;
+
+        for pid in pids.into_iter().take(max_entries) {
+            let entry = match kernel.procs.get(&pid) {
+                Some(val) => val,
+                None => continue,
+            };
+            let state = match entry.state {
+                ProcState::Running => 0u8,
+                ProcState::Blocked => 1u8,
+                ProcState::Exited => 2u8,
+            };
+            let exit_code = entry.exit_code.unwrap_or(0);
+            let mut record = Vec::with_capacity(DBG_PROC_RECORD_SIZE);
+            record.extend_from_slice(&pid.to_be_bytes());
+            record.push(state);
+            record.push(exit_code);
+            record.extend_from_slice(&0u16.to_be_bytes());
+
+            let addr = out_ptr as u32 + (count * DBG_PROC_RECORD_SIZE) as u32;
+            if proc.write_bytes(addr, &record).is_err() {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+            count += 1;
+        }
+
+        proc.regs.V[0] = count.min(0xFF) as u8;
+        proc.regs.V[0xF] = 0;
+        SyscallOutcome::Completed
+    }
+
+    fn sys_dbg_regs(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let target_pid = match Kernel::syscall_arg(proc, 0) {
+            Ok(val) => val as u32,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let out_ptr = match Kernel::syscall_arg(proc, 1) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        let entry = match kernel.procs.get_mut(&target_pid) {
+            Some(val) => val,
+            None => {
+                proc.regs.V[0] = ERR_NOT_FOUND;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let regs = &entry.proc.regs;
+        let mut record = Vec::with_capacity(DBG_REGS_SIZE);
+        record.extend_from_slice(&regs.PC.to_be_bytes());
+        record.extend_from_slice(&regs.SP.to_be_bytes());
+        record.extend_from_slice(&regs.I.to_be_bytes());
+        record.extend_from_slice(&regs.V);
+        record.push(regs.DT);
+        record.push(regs.ST);
+
+        if proc.write_bytes(out_ptr as u32, &record).is_err() {
+            proc.regs.V[0] = ERR_INVALID;
+            proc.regs.V[0xF] = 1;
+            return SyscallOutcome::Completed;
+        }
+
+        proc.regs.V[0] = (record.len().min(0xFF)) as u8;
+        proc.regs.V[0xF] = 0;
+        SyscallOutcome::Completed
+    }
+
+    fn sys_dbg_mem_read(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let target_pid = match Kernel::syscall_arg(proc, 0) {
+            Ok(val) => val as u32,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let addr = match Kernel::syscall_arg(proc, 1) {
+            Ok(val) => val as u32,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let len = match Kernel::syscall_arg(proc, 2) {
+            Ok(val) => val as usize,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let out_ptr = match Kernel::syscall_arg(proc, 3) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        let entry = match kernel.procs.get_mut(&target_pid) {
+            Some(val) => val,
+            None => {
+                proc.regs.V[0] = ERR_NOT_FOUND;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let data = match entry.proc.read_bytes(addr, len) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        if proc.write_bytes(out_ptr as u32, &data).is_err() {
+            proc.regs.V[0] = ERR_INVALID;
+            proc.regs.V[0xF] = 1;
+            return SyscallOutcome::Completed;
+        }
+
+        proc.regs.V[0] = data.len().min(0xFF) as u8;
+        proc.regs.V[0xF] = 0;
+        SyscallOutcome::Completed
+    }
+
+    fn sys_dbg_mem_write(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let target_pid = match Kernel::syscall_arg(proc, 0) {
+            Ok(val) => val as u32,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let addr = match Kernel::syscall_arg(proc, 1) {
+            Ok(val) => val as u32,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let len = match Kernel::syscall_arg(proc, 2) {
+            Ok(val) => val as usize,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let in_ptr = match Kernel::syscall_arg(proc, 3) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        let entry = match kernel.procs.get_mut(&target_pid) {
+            Some(val) => val,
+            None => {
+                proc.regs.V[0] = ERR_NOT_FOUND;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let data = match proc.read_bytes(in_ptr as u32, len) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        if entry.proc.write_bytes(addr, &data).is_err() {
+            proc.regs.V[0] = ERR_INVALID;
+            proc.regs.V[0xF] = 1;
+            return SyscallOutcome::Completed;
+        }
+
+        proc.regs.V[0] = data.len().min(0xFF) as u8;
         proc.regs.V[0xF] = 0;
         SyscallOutcome::Completed
     }

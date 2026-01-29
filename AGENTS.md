@@ -17,6 +17,8 @@ and scalable to larger scope.
   use cases without over‑engineering.
 - **Leave the codebase better than you found it.** Small improvements in
   structure, tests, or docs are additive.
+- **Debuggability is first-class.** Prefer designs that expose state, enable
+  tracing, and support inspection without invasive changes.
 
 ---
 
@@ -40,6 +42,8 @@ and scalable to larger scope.
 - **Prove by inspection.** Make it easy to reason about the code’s behavior
   without running it.
 - **Handle edge cases deliberately.** If a case is undefined, say so.
+- **Bake in observability.** Ensure state transitions and critical data can be
+  introspected by tests, tools, and (eventually) in-system debuggers.
 
 ---
 
@@ -101,6 +105,7 @@ and scalable to larger scope.
 - Does the change preserve invariants?
 - Are new behaviors documented and tested?
 - Is the failure behavior explicit and safe?
+- Can the system be inspected/debugged without ad-hoc instrumentation?
 - Can a new engineer understand the change without tribal context?
 
 If all answers are “yes,” the change is ready to ship.

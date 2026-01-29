@@ -363,6 +363,21 @@ Where to look:
 
 ---
 
+## 15.1) Debug Syscalls (Early ABI)
+
+We reserve and implement a small debug syscall surface (0x0130..0x0133) so a
+Chip-8 debugger ROM can inspect running processes. The initial ABI includes:
+
+- `dbg_list` (enumerate processes + state)
+- `dbg_regs` (read full register snapshot)
+- `dbg_mem_read` / `dbg_mem_write` (memory inspection)
+
+Where to look:
+- `src/kernel.rs` (debug syscall implementations)
+- `SYSCALLS.md` (debug ABI layout)
+
+---
+
 ## 16) Practical Reading Guide
 
 Suggested reading order:

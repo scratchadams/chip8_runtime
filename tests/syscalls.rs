@@ -84,6 +84,10 @@ fn read_dir_entries(proc: &mut Proc, base: u16, count: usize) -> Vec<(String, u8
     entries
 }
 
+fn read_u16_be(buf: &[u8], offset: usize) -> u16 {
+    u16::from_be_bytes([buf[offset], buf[offset + 1]])
+}
+
 #[test]
 fn sys_write_sets_v0_and_vf() {
     set_headless();
@@ -105,6 +109,49 @@ fn sys_write_sets_v0_and_vf() {
     let proc = kernel.proc(pid).unwrap();
     assert_eq!(proc.regs.V[0], 1);
     assert_eq!(proc.regs.V[0xF], 0);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn sys_dbg_regs_reads_target() {
+    set_headless();
+    let root = temp_root("dbg_regs");
+    let mut kernel = make_kernel(&root);
+
+    let target_pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
+    let debug_pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
+
+    {
+        let target = kernel.proc_mut(target_pid).unwrap();
+        target.regs.PC = 0x234;
+        target.regs.SP = 0x345;
+        target.regs.I = 0x456;
+        target.regs.V[0] = 0xAA;
+        target.regs.V[1] = 0xBB;
+        target.regs.DT = 0x11;
+        target.regs.ST = 0x22;
+    }
+
+    {
+        let debug = kernel.proc_mut(debug_pid).unwrap();
+        write_frame(debug, 0x300, &[target_pid as u16, 0x0340]);
+        debug.regs.I = 0x300;
+        write_opcode(debug, debug.regs.PC, 0x0131);
+    }
+
+    let outcome = kernel.step_proc(debug_pid).unwrap();
+    assert_eq!(outcome, SyscallOutcome::Completed);
+
+    let debug = kernel.proc_mut(debug_pid).unwrap();
+    let data = debug.read_bytes(0x0340, 24).unwrap();
+    assert_eq!(read_u16_be(&data, 0), 0x234);
+    assert_eq!(read_u16_be(&data, 2), 0x345);
+    assert_eq!(read_u16_be(&data, 4), 0x456);
+    assert_eq!(data[6], 0xAA);
+    assert_eq!(data[7], 0xBB);
+    assert_eq!(data[22], 0x11);
+    assert_eq!(data[23], 0x22);
 
     let _ = fs::remove_dir_all(root);
 }

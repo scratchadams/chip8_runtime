@@ -129,6 +129,10 @@ The host `Kernel` implements `InputDevice` and `FsDevice` so the core can
 eventually target alternative backends without changing opcode semantics.
 Console-mode input is polled continuously and buffered per process, so the CLI
 can accept keystrokes even while it is running (not just while blocked).
+Scheduling is currently cooperative but is being refactored toward a preemptive,
+policy-driven scheduler with explicit context switch boundaries.
+The kernel now enforces a configurable time slice (instruction-step budget per
+proc) to enable preemption while keeping timer ticks stable.
 
 ```
 Kernel
@@ -492,6 +496,21 @@ logic now living in `chip8_core`):
 The headless test path and opcode semantics suite make the core CPU logic
 observable and reliable. The next major step is implementing timing behavior
 and optional CHIP-8 extensions if you want to pass the full suite of tests.
+
+---
+
+## 13) Debug Interfaces (Planned)
+
+The roadmap calls for a syscall-based debug interface that a Chip-8 debugger ROM
+can use to inspect live processes. The planned surface includes:
+
+- List processes and basic metadata.
+- Read/write registers (full context snapshot).
+- Read/write memory ranges.
+- Structured dumps (full register state, process tables, memory ranges).
+
+The intention is to keep debugging capabilities in-band (syscalls) so a ROM can
+act as a userland debugger without host-only tooling.
 
 ---
 
