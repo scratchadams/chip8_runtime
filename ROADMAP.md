@@ -71,8 +71,10 @@ reuse the core logic without major rewrites.
 - In progress: `chip8_core` crate introduced with `SharedMemory`, `Proc`,
   `Registers`, `chip8_engine`, and `SyscallOutcome` moved into it; host crate
   re-exports keep existing paths working.
-- Done: initial `DisplayDevice` trait + `DisplayMode` moved into core.
-- Remaining: add input/fs device traits and reduce `std` usage in core.
+- Done: `DisplayDevice`, `InputDevice`, and `FsDevice` traits live in core and
+  the host kernel implements the input/fs adapters.
+- Remaining: route syscalls through device traits, reduce `std` usage in core,
+  and add `no_std` gating.
 
 ---
 
@@ -183,6 +185,9 @@ handle basic text I/O.
 
 - Host-backed filesystem syscalls (list/open/read/close) to enumerate ROMs.
 - ROM-side helper routines for syscall frame construction and string parsing.
+- Future: define a custom executable container format that wraps `.ch8` and
+  declares device options (refresh rate, console mode, input mode, etc.), plus
+  a conversion tool from standard ROMs.
 
 ### Example syscall IDs
 

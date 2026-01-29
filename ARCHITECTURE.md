@@ -32,7 +32,7 @@ chip8_runtime/
 │       ├── proc.rs            # Proc, Registers, stepping helpers
 │       ├── chip8_engine.rs    # opcode handlers and opcode field macros
 │       ├── shared_memory.rs   # SharedMemory allocator + read/write helpers
-│       ├── device.rs          # DisplayDevice trait + DisplayMode
+│       ├── device.rs          # Display/Input/FS traits + shared enums
 │       └── syscall.rs         # SyscallOutcome enum + ABI helpers
 ├── src/
 │   ├── main.rs            # binary entrypoint, builds Kernel and runs scheduler
@@ -98,6 +98,10 @@ It implements `DisplayDevice` so the core interpreter can target different
 backends later. The Chip-8 64x32 grid is scaled into the higher-resolution
 console surface (`CHIP8_PIXEL_SCALE`, currently 10), then scaled again for
 window presentation (`SCALE`, currently 2).
+Refresh rate is device-specific: the Chip-8 mode defaults to 60Hz while the
+console mode defaults to 500Hz so CLI input can feel more responsive. Rendering
+is decoupled from CPU stepping: sprite draws mark the buffer dirty and the
+kernel asks the display to present at its target refresh cadence.
 
 ```
 DisplayWindow
@@ -121,6 +125,10 @@ model.
 Per-process input mode (line vs byte) controls how `sys_read` behaves.
 Filesystem syscalls are host-backed and constrained to a validated root
 directory.
+The host `Kernel` implements `InputDevice` and `FsDevice` so the core can
+eventually target alternative backends without changing opcode semantics.
+Console-mode input is polled continuously and buffered per process, so the CLI
+can accept keystrokes even while it is running (not just while blocked).
 
 ```
 Kernel
@@ -440,9 +448,9 @@ SharedMemory.phys_mem[phys]
 ## 11) Suggested Next Steps / Improvements
 
 1. **Timer accuracy**  
-   Timers now tick at ~60Hz inside `Proc::step`, but the cadence depends on how
-   often `step()` is called. If you add a scheduler or throttling, consider
-   decoupling the timer tick from instruction rate.
+   Timers are driven by kernel-supplied 60Hz ticks. Make sure the tick cadence
+   remains stable even if the display refresh rate changes or the scheduler
+   throttles idle loops.
 
 2. **Configurable ROM loading**  
    `main.rs` hard-codes paths like `/root/rust/chip8/ibm.ch8`. Add CLI args or
@@ -458,16 +466,16 @@ SharedMemory.phys_mem[phys]
    consider fragmentation/compaction.
 
 5. **Display and input abstraction**  
-   The core now defines a `DisplayDevice` trait; expand it with input/fs traits
-   and move more host-only logic out of the interpreter.
+   Core traits now cover display/input/fs. Next step is to route syscalls
+   through those traits so the host kernel becomes a thin adapter.
 
 6. **Super-CHIP/XO-CHIP extensions**  
    The Timendus suite includes scrolling and high‑res tests. If you want to pass
    those, add scrolling opcodes, 128x64 mode, and associated quirks.
 
 7. **Test coverage for timing and sound**  
-   Tests now cover opcode semantics thoroughly. Add timer-tick tests once the
-   60Hz mechanism is implemented.
+   Tests now cover opcode semantics thoroughly. Add timer-tick tests for the
+   kernel-supplied tick path and sound timer edge cases.
 
 ---
 

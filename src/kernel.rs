@@ -12,6 +12,9 @@ pub mod kernel {
     use crate::shared_memory::shared_memory::SharedMemory;
 
     pub use chip8_core::syscall::syscall::SyscallOutcome;
+    use chip8_core::device::device::{
+        DisplayDevice, FsDevice, FsEntry, FsEntryKind, FsError, InputDevice, InputError,
+    };
 
     const SYS_SPAWN: u16 = 0x0101;
     const SYS_EXIT: u16 = 0x0102;
@@ -40,6 +43,7 @@ pub mod kernel {
     const MAX_FILE_SIZE: u64 = 64 * 1024;
     const MAX_OPEN_FILES: usize = 32;
     const DIR_ENTRY_SIZE: usize = 1 + MAX_FILENAME_LEN + 1 + 4;
+    const DEBUG_INPUT_ENV: &str = "CHIP8_DEBUG_INPUT";
 
     pub type SyscallHandler =
         Arc<dyn Fn(&mut Kernel, u32, &mut Proc) -> SyscallOutcome + Send + Sync>;
@@ -247,6 +251,10 @@ pub mod kernel {
             let outcome = entry
                 .proc
                 .step(ticks, |id, proc| self.dispatch_syscall(pid, proc, id));
+            entry.proc.display.present_if_due();
+            if self.drain_display_input(&mut entry.proc) {
+                self.unblock_readers();
+            }
 
             self.apply_pending(pid, &mut entry, outcome);
             self.procs.insert(pid, entry);
@@ -326,7 +334,7 @@ pub mod kernel {
                     None => continue,
                 };
 
-                if entry.proc.console_mode == ConsoleMode::Display && entry.state == ProcState::Blocked {
+                if entry.proc.console_mode == ConsoleMode::Display {
                     entry.proc.display.poll_input(true);
                     let data = entry.proc.display.drain_text_input();
                     if !data.is_empty() {
@@ -344,6 +352,7 @@ pub mod kernel {
         }
 
         fn apply_console_input(&mut self, proc: &mut Proc, data: &[u8]) {
+            let pid = proc.regs.V[0];
             for &byte in data {
                 if byte == 0x08 {
                     if proc.console_input.pop_back().is_some() {
@@ -354,6 +363,29 @@ pub mod kernel {
                 proc.console_input.push_back(byte);
                 proc.display.console_write(&[byte]);
             }
+            proc.display.present_if_due();
+            if std::env::var(DEBUG_INPUT_ENV).is_ok() {
+                let bytes: Vec<String> = data.iter().map(|b| format!("{:02X}", b)).collect();
+                let ascii = String::from_utf8_lossy(data);
+                eprintln!("[input] pid={} len={} bytes=[{}] ascii={:?}",
+                    pid,
+                    data.len(),
+                    bytes.join(" "),
+                    ascii
+                );
+            }
+        }
+
+        fn drain_display_input(&mut self, proc: &mut Proc) -> bool {
+            if proc.console_mode != ConsoleMode::Display {
+                return false;
+            }
+            let data = proc.display.drain_text_input();
+            if data.is_empty() {
+                return false;
+            }
+            self.apply_console_input(proc, &data);
+            true
         }
 
         fn run_proc_until_yield_or_block(&mut self, pid: u32) -> Result<(), Error> {
@@ -371,6 +403,10 @@ pub mod kernel {
                 let outcome = entry
                     .proc
                     .step(ticks, |id, proc| self.dispatch_syscall(pid, proc, id));
+                entry.proc.display.present_if_due();
+                if self.drain_display_input(&mut entry.proc) {
+                    self.unblock_readers();
+                }
 
                 self.apply_pending(pid, &mut entry, outcome);
                 let should_break = matches!(outcome, SyscallOutcome::Blocked | SyscallOutcome::Yielded);
@@ -612,6 +648,112 @@ pub mod kernel {
                 }
             }
             data
+        }
+
+        fn fs_error_to_code(err: FsError) -> u8 {
+            match err {
+                FsError::Invalid => ERR_INVALID,
+                FsError::Io => ERR_IO,
+                FsError::NotFound => ERR_NOT_FOUND,
+                FsError::NotDir => ERR_NOT_DIR,
+                FsError::IsDir => ERR_IS_DIR,
+                FsError::NameTooLong => ERR_NAME_TOO_LONG,
+                FsError::TooManyOpen => ERR_TOO_MANY_OPEN,
+                FsError::Path => ERR_PATH,
+            }
+        }
+
+        fn fs_list_entries(&self, path: &str, max_entries: usize) -> Result<Vec<FsEntry>, FsError> {
+            let dir_path = self
+                .resolve_fs_path(path)
+                .map_err(|err| if err.kind() == ErrorKind::NotFound { FsError::NotFound } else { FsError::Path })?;
+
+            let meta = fs::metadata(&dir_path).map_err(|_| FsError::NotFound)?;
+            if !meta.is_dir() {
+                return Err(FsError::NotDir);
+            }
+
+            let entries = fs::read_dir(&dir_path).map_err(|_| FsError::Io)?;
+            let mut out = Vec::new();
+            for entry in entries {
+                if out.len() >= max_entries {
+                    break;
+                }
+                let entry = match entry {
+                    Ok(val) => val,
+                    Err(_) => continue,
+                };
+                let name = entry.file_name().to_string_lossy().to_string();
+                if name.len() > MAX_FILENAME_LEN {
+                    return Err(FsError::NameTooLong);
+                }
+                let meta = match entry.metadata() {
+                    Ok(val) => val,
+                    Err(_) => continue,
+                };
+                let kind = if meta.is_dir() { FsEntryKind::Dir } else { FsEntryKind::File };
+                let size = if meta.is_file() { meta.len() as u32 } else { 0u32 };
+                out.push(FsEntry { name, kind, size });
+            }
+            Ok(out)
+        }
+
+        fn fs_open_path(&mut self, pid: u32, path: &str) -> Result<u8, FsError> {
+            let file_path = self
+                .resolve_fs_path(path)
+                .map_err(|err| if err.kind() == ErrorKind::NotFound { FsError::NotFound } else { FsError::Path })?;
+
+            let meta = fs::metadata(&file_path).map_err(|_| FsError::NotFound)?;
+            if meta.is_dir() {
+                return Err(FsError::IsDir);
+            }
+            if meta.len() > MAX_FILE_SIZE {
+                return Err(FsError::Io);
+            }
+
+            let table = self.fd_tables.get_mut(&pid).ok_or(FsError::NotFound)?;
+            if table.fds.len() >= MAX_OPEN_FILES {
+                return Err(FsError::TooManyOpen);
+            }
+
+            let file = fs::File::open(&file_path).map_err(|_| FsError::Io)?;
+
+            let mut fd = table.next_fd;
+            for _ in 0..=u8::MAX {
+                if fd == 0 {
+                    fd = 1;
+                }
+                if !table.fds.contains_key(&fd) {
+                    break;
+                }
+                fd = fd.wrapping_add(1);
+            }
+            if table.fds.contains_key(&fd) {
+                return Err(FsError::TooManyOpen);
+            }
+
+            table.fds.insert(fd, file);
+            table.next_fd = fd.wrapping_add(1);
+            Ok(fd)
+        }
+
+        fn fs_read_fd(&mut self, pid: u32, fd: u8, len: usize) -> Result<Vec<u8>, FsError> {
+            let table = self.fd_tables.get_mut(&pid).ok_or(FsError::NotFound)?;
+            let file = table.fds.get_mut(&fd).ok_or(FsError::NotFound)?;
+
+            let max_len = len.min(0xFF);
+            let mut data = vec![0u8; max_len];
+            let read = file.read(&mut data).map_err(|_| FsError::Io)?;
+            data.truncate(read);
+            Ok(data)
+        }
+
+        fn fs_close_fd(&mut self, pid: u32, fd: u8) -> Result<(), FsError> {
+            let table = self.fd_tables.get_mut(&pid).ok_or(FsError::NotFound)?;
+            if table.fds.remove(&fd).is_none() {
+                return Err(FsError::NotFound);
+            }
+            Ok(())
         }
 
         fn resolve_rom_path(&self, name: &str) -> Result<PathBuf, Error> {
@@ -911,6 +1053,16 @@ pub mod kernel {
                         proc.regs.V[0] = count.min(0xFF) as u8;
                         proc.regs.V[0xF] = 0;
                     }
+                    if std::env::var(DEBUG_INPUT_ENV).is_ok() {
+                        let bytes: Vec<String> = data.iter().map(|b| format!("{:02X}", b)).collect();
+                        let ascii = String::from_utf8_lossy(&data);
+                        eprintln!("[read] pid={} mode=line count={} bytes=[{}] ascii={:?}",
+                            pid,
+                            count,
+                            bytes.join(" "),
+                            ascii
+                        );
+                    }
                     return SyscallOutcome::Completed;
                 }
 
@@ -947,6 +1099,16 @@ pub mod kernel {
                     } else {
                         proc.regs.V[0] = count.min(0xFF) as u8;
                         proc.regs.V[0xF] = 0;
+                    }
+                    if std::env::var(DEBUG_INPUT_ENV).is_ok() {
+                        let bytes: Vec<String> = data.iter().map(|b| format!("{:02X}", b)).collect();
+                        let ascii = String::from_utf8_lossy(&data);
+                        eprintln!("[read] pid={} mode=byte count={} bytes=[{}] ascii={:?}",
+                            pid,
+                            count,
+                            bytes.join(" "),
+                            ascii
+                        );
                     }
                     return SyscallOutcome::Completed;
                 }
@@ -1065,70 +1227,29 @@ pub mod kernel {
             }
         };
         let path_str = String::from_utf8_lossy(&path_bytes).to_string();
-        let dir_path = match kernel.resolve_fs_path(&path_str) {
+        let entries = match kernel.fs_list_entries(&path_str, max_entries) {
             Ok(val) => val,
             Err(err) => {
-                proc.regs.V[0] = if err.kind() == ErrorKind::NotFound {
-                    ERR_NOT_FOUND
-                } else {
-                    ERR_PATH
-                };
+                proc.regs.V[0] = Kernel::fs_error_to_code(err);
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
             }
         };
-        let meta = match fs::metadata(&dir_path) {
-            Ok(val) => val,
-            Err(_) => {
-                proc.regs.V[0] = ERR_NOT_FOUND;
-                proc.regs.V[0xF] = 1;
-                return SyscallOutcome::Completed;
-            }
-        };
-        if !meta.is_dir() {
-            proc.regs.V[0] = ERR_NOT_DIR;
-            proc.regs.V[0xF] = 1;
-            return SyscallOutcome::Completed;
-        }
 
-        let mut count = 0usize;
-        let entries = match fs::read_dir(&dir_path) {
-            Ok(val) => val,
-            Err(_) => {
-                proc.regs.V[0] = ERR_IO;
-                proc.regs.V[0xF] = 1;
-                return SyscallOutcome::Completed;
-            }
-        };
-        for entry in entries {
-            if count >= max_entries {
-                break;
-            }
-            let entry = match entry {
-                Ok(val) => val,
-                Err(_) => continue,
+        for (count, entry) in entries.iter().enumerate() {
+            let kind = match entry.kind {
+                FsEntryKind::Dir => 1u8,
+                FsEntryKind::File => 0u8,
             };
-            let name = entry.file_name().to_string_lossy().to_string();
-            if name.len() > MAX_FILENAME_LEN {
-                proc.regs.V[0] = ERR_NAME_TOO_LONG;
-                proc.regs.V[0xF] = 1;
-                return SyscallOutcome::Completed;
-            }
-            let meta = match entry.metadata() {
-                Ok(val) => val,
-                Err(_) => continue,
-            };
-            let kind = if meta.is_dir() { 1u8 } else { 0u8 };
-            let size = if meta.is_file() { meta.len() as u32 } else { 0u32 };
 
             let mut record = Vec::with_capacity(DIR_ENTRY_SIZE);
-            record.push(name.len() as u8);
-            record.extend_from_slice(name.as_bytes());
-            if name.len() < MAX_FILENAME_LEN {
-                record.extend(std::iter::repeat(0u8).take(MAX_FILENAME_LEN - name.len()));
+            record.push(entry.name.len() as u8);
+            record.extend_from_slice(entry.name.as_bytes());
+            if entry.name.len() < MAX_FILENAME_LEN {
+                record.extend(std::iter::repeat(0u8).take(MAX_FILENAME_LEN - entry.name.len()));
             }
             record.push(kind);
-            record.extend_from_slice(&size.to_be_bytes());
+            record.extend_from_slice(&entry.size.to_be_bytes());
 
             let addr = out_ptr as u32 + (count * DIR_ENTRY_SIZE) as u32;
             if proc.write_bytes(addr, &record).is_err() {
@@ -1136,10 +1257,9 @@ pub mod kernel {
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
             }
-            count += 1;
         }
 
-        proc.regs.V[0] = count.min(0xFF) as u8;
+        proc.regs.V[0] = entries.len().min(0xFF) as u8;
         proc.regs.V[0xF] = 0;
         SyscallOutcome::Completed
     }
@@ -1172,79 +1292,14 @@ pub mod kernel {
             }
         };
         let path_str = String::from_utf8_lossy(&path_bytes).to_string();
-        let file_path = match kernel.resolve_fs_path(&path_str) {
+        let fd = match kernel.fs_open_path(pid, &path_str) {
             Ok(val) => val,
             Err(err) => {
-                proc.regs.V[0] = if err.kind() == ErrorKind::NotFound {
-                    ERR_NOT_FOUND
-                } else {
-                    ERR_PATH
-                };
+                proc.regs.V[0] = Kernel::fs_error_to_code(err);
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
             }
         };
-        let meta = match fs::metadata(&file_path) {
-            Ok(val) => val,
-            Err(_) => {
-                proc.regs.V[0] = ERR_NOT_FOUND;
-                proc.regs.V[0xF] = 1;
-                return SyscallOutcome::Completed;
-            }
-        };
-        if meta.is_dir() {
-            proc.regs.V[0] = ERR_IS_DIR;
-            proc.regs.V[0xF] = 1;
-            return SyscallOutcome::Completed;
-        }
-        if meta.len() > MAX_FILE_SIZE {
-            proc.regs.V[0] = ERR_IO;
-            proc.regs.V[0xF] = 1;
-            return SyscallOutcome::Completed;
-        }
-
-        let table = match kernel.fd_tables.get_mut(&pid) {
-            Some(val) => val,
-            None => {
-                proc.regs.V[0] = ERR_NOT_FOUND;
-                proc.regs.V[0xF] = 1;
-                return SyscallOutcome::Completed;
-            }
-        };
-
-        if table.fds.len() >= MAX_OPEN_FILES {
-            proc.regs.V[0] = ERR_TOO_MANY_OPEN;
-            proc.regs.V[0xF] = 1;
-            return SyscallOutcome::Completed;
-        }
-
-        let file = match fs::File::open(&file_path) {
-            Ok(val) => val,
-            Err(_) => {
-                proc.regs.V[0] = ERR_IO;
-                proc.regs.V[0xF] = 1;
-                return SyscallOutcome::Completed;
-            }
-        };
-
-        let mut fd = table.next_fd;
-        for _ in 0..=u8::MAX {
-            if fd == 0 {
-                fd = 1;
-            }
-            if !table.fds.contains_key(&fd) {
-                break;
-            }
-            fd = fd.wrapping_add(1);
-        }
-        if table.fds.contains_key(&fd) {
-            proc.regs.V[0] = ERR_TOO_MANY_OPEN;
-            proc.regs.V[0xF] = 1;
-            return SyscallOutcome::Completed;
-        }
-
-        table.fds.insert(fd, file);
-        table.next_fd = fd.wrapping_add(1);
 
         proc.regs.V[0] = fd;
         proc.regs.V[0xF] = 0;
@@ -1277,42 +1332,21 @@ pub mod kernel {
             }
         };
 
-        let table = match kernel.fd_tables.get_mut(&pid) {
-            Some(val) => val,
-            None => {
-                proc.regs.V[0] = ERR_NOT_FOUND;
-                proc.regs.V[0xF] = 1;
-                return SyscallOutcome::Completed;
-            }
-        };
-
-        let file = match table.fds.get_mut(&fd) {
-            Some(val) => val,
-            None => {
-                proc.regs.V[0] = ERR_NOT_FOUND;
-                proc.regs.V[0xF] = 1;
-                return SyscallOutcome::Completed;
-            }
-        };
-
-        let max_len = len.min(0xFF);
-        let mut data = vec![0u8; max_len];
-        let read = match file.read(&mut data) {
+        let data = match kernel.fs_read_fd(pid, fd, len) {
             Ok(val) => val,
-            Err(_) => {
-                proc.regs.V[0] = ERR_IO;
+            Err(err) => {
+                proc.regs.V[0] = Kernel::fs_error_to_code(err);
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
             }
         };
-        data.truncate(read);
         if proc.write_bytes(buf as u32, &data).is_err() {
             proc.regs.V[0] = ERR_INVALID;
             proc.regs.V[0xF] = 1;
             return SyscallOutcome::Completed;
         }
 
-        proc.regs.V[0] = read.min(0xFF) as u8;
+        proc.regs.V[0] = data.len().min(0xFF) as u8;
         proc.regs.V[0xF] = 0;
         SyscallOutcome::Completed
     }
@@ -1326,20 +1360,44 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let table = match kernel.fd_tables.get_mut(&pid) {
-            Some(val) => val,
-            None => {
-                proc.regs.V[0] = ERR_NOT_FOUND;
-                proc.regs.V[0xF] = 1;
-                return SyscallOutcome::Completed;
-            }
-        };
-        if table.fds.remove(&fd).is_none() {
-            proc.regs.V[0] = ERR_NOT_FOUND;
+        if let Err(err) = kernel.fs_close_fd(pid, fd) {
+            proc.regs.V[0] = Kernel::fs_error_to_code(err);
             proc.regs.V[0xF] = 1;
             return SyscallOutcome::Completed;
         }
         proc.regs.V[0xF] = 0;
         SyscallOutcome::Completed
+    }
+
+    impl InputDevice for Kernel {
+        fn push_input(&mut self, data: &[u8]) {
+            Kernel::push_input(self, data);
+        }
+
+        fn blocking_read_line(&mut self) -> Result<(), InputError> {
+            self.blocking_read_line_from_stdin().map_err(|_| InputError::Io)
+        }
+
+        fn blocking_read_byte(&mut self) -> Result<(), InputError> {
+            self.blocking_read_byte_from_stdin().map_err(|_| InputError::Io)
+        }
+    }
+
+    impl FsDevice for Kernel {
+        fn list(&mut self, path: &str, max_entries: usize) -> Result<Vec<FsEntry>, FsError> {
+            self.fs_list_entries(path, max_entries)
+        }
+
+        fn open(&mut self, pid: u32, path: &str) -> Result<u8, FsError> {
+            self.fs_open_path(pid, path)
+        }
+
+        fn read(&mut self, pid: u32, fd: u8, len: usize) -> Result<Vec<u8>, FsError> {
+            self.fs_read_fd(pid, fd, len)
+        }
+
+        fn close(&mut self, pid: u32, fd: u8) -> Result<(), FsError> {
+            self.fs_close_fd(pid, fd)
+        }
     }
 }

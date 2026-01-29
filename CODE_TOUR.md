@@ -27,6 +27,7 @@ Key Rust concept:
 Where to look:
 - Module exports: `src/lib.rs`, `chip8_core/src/lib.rs`
 - Binary wiring: `src/main.rs`
+- Device traits: `chip8_core/src/device.rs`
 
 ---
 
@@ -309,6 +310,12 @@ Where to look:
 - `src/kernel.rs` (spawn)
 - `src/main.rs` (root proc creation)
 
+Note:
+- The display uses device-specific refresh rates. Chip-8 mode defaults to 60Hz,
+  while console mode defaults to 500Hz to keep CLI input/rendering snappy.
+  Rendering is decoupled from CPU stepping: draws mark the buffer dirty and the
+  kernel triggers `present_if_due` based on the device refresh cadence.
+
 ---
 
 ## 14) Input Modes (Line vs Byte)
@@ -323,6 +330,10 @@ Switching is done via the `input_mode` syscall (`0x0112`). This lets CLI ROMs
 opt into line-oriented input without preventing other ROMs from using byte-precise
 reads. Output/input routing is controlled separately via `console_mode`
 (`0x0113`), which allows a ROM to opt into the display-backed text console.
+
+Input capture behavior:
+- Console-mode input is polled continuously, even while the CLI is running, so
+  keystrokes are buffered immediately and read calls can consume them later.
 
 Where to look:
 - `src/kernel.rs` (`InputMode`, `ConsoleMode`, `sys_input_mode`, `sys_console_mode`, `sys_read`)
@@ -342,10 +353,12 @@ Rust concepts in play:
 - `std::fs::read_dir` for directory iteration.
 - `Path` + `Component` for safe path normalization.
 - `std::fs::File` stored in a kernel-owned FD table keyed by pid.
+- Core-level `FsDevice` trait models list/open/read/close; the host kernel
+  implements it as the std-backed adapter.
 
 Where to look:
 - `src/kernel.rs` (`sys_fs_list`, `sys_fs_open`, `sys_fs_read`, `sys_fs_close`)
-- `src/kernel.rs` (per-proc FD table)
+- `src/kernel.rs` (per-proc FD table + `FsDevice` impl)
 - `SYSCALLS.md` (ABI + record layout)
 
 ---

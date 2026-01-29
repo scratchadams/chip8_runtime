@@ -1,7 +1,9 @@
 pub mod display {
-    use minifb::{Key, KeyRepeat, Window, WindowOptions};
+    use minifb::{InputCallback, Key, KeyRepeat, Window, WindowOptions};
     use std::collections::VecDeque;
     use std::io::Error;
+    use std::sync::{Arc, Mutex};
+    use std::time::{Duration, Instant};
 
     use chip8_core::device::device::DisplayDevice;
     pub use chip8_core::device::device::DisplayMode;
@@ -16,6 +18,8 @@ pub mod display {
     const CONSOLE_HEIGHT: usize = 320;
     pub const SCALE: usize = 2;
     pub const CHIP8_PIXEL_SCALE: usize = CONSOLE_WIDTH / CHIP8_WIDTH;
+    const CHIP8_REFRESH_HZ: u32 = 60;
+    const CONSOLE_REFRESH_HZ: u32 = 500;
 
     const WINDOW_WIDTH: usize = CONSOLE_WIDTH * SCALE;
     const WINDOW_HEIGHT: usize = CONSOLE_HEIGHT * SCALE;
@@ -129,8 +133,48 @@ pub mod display {
         pub key_down: [bool; 16],
         pub last_key: Option<u8>,
         text_input: VecDeque<u8>,
+        input_queue: Option<Arc<Mutex<VecDeque<u8>>>>,
         console: Console,
         mode: DisplayMode,
+        refresh_hz_chip8: u32,
+        refresh_hz_console: u32,
+        dirty: bool,
+        last_present: Instant,
+    }
+
+    struct InputQueue {
+        buf: Arc<Mutex<VecDeque<u8>>>,
+    }
+
+    impl InputCallback for InputQueue {
+        fn add_char(&mut self, uni_char: u32) {
+            if let Ok(byte) = u8::try_from(uni_char) {
+                if byte == b'\r' {
+                    if let Ok(mut guard) = self.buf.lock() {
+                        guard.push_back(b'\n');
+                    }
+                    return;
+                }
+                if let Ok(mut guard) = self.buf.lock() {
+                    guard.push_back(byte);
+                }
+            }
+        }
+
+        fn set_key_state(&mut self, key: Key, state: bool) {
+            if !state {
+                return;
+            }
+            let byte = match key {
+                Key::Backspace => Some(0x08),
+                _ => None,
+            };
+            if let Some(byte) = byte {
+                if let Ok(mut guard) = self.buf.lock() {
+                    guard.push_back(byte);
+                }
+            }
+        }
     }
 
     impl DisplayWindow {
@@ -142,6 +186,12 @@ pub mod display {
                 WINDOW_HEIGHT,
                 WindowOptions::default()
             ).unwrap();
+            let refresh_hz_chip8 = CHIP8_REFRESH_HZ;
+            let refresh_hz_console = CONSOLE_REFRESH_HZ;
+            let input_queue = Arc::new(Mutex::new(VecDeque::new()));
+            window.set_input_callback(Box::new(InputQueue {
+                buf: Arc::clone(&input_queue),
+            }));
 
             let buf: Vec<u32> = vec![0; WINDOW_WIDTH * WINDOW_HEIGHT];
             window
@@ -155,8 +205,13 @@ pub mod display {
                 key_down: [false; 16],
                 last_key: None,
                 text_input: VecDeque::new(),
+                input_queue: Some(input_queue),
                 console: Console::new(TEXT_COLS, TEXT_ROWS),
                 mode: DisplayMode::Chip8,
+                refresh_hz_chip8: refresh_hz_chip8,
+                refresh_hz_console: refresh_hz_console,
+                dirty: true,
+                last_present: Instant::now(),
             })
         }
 
@@ -169,8 +224,13 @@ pub mod display {
                 key_down: [false; 16],
                 last_key: None,
                 text_input: VecDeque::new(),
+                input_queue: None,
                 console: Console::new(TEXT_COLS, TEXT_ROWS),
                 mode: DisplayMode::Chip8,
+                refresh_hz_chip8: CHIP8_REFRESH_HZ,
+                refresh_hz_console: CONSOLE_REFRESH_HZ,
+                dirty: true,
+                last_present: Instant::now(),
             }
         }
 
@@ -191,9 +251,7 @@ pub mod display {
                 }
                 DisplayMode::Chip8 => {
                     self.buf.iter_mut().for_each(|x| *x = 0);
-                    if let Some(window) = self.window.as_mut() {
-                        let _ = window.update_with_buffer(&self.buf, WINDOW_WIDTH, WINDOW_HEIGHT);
-                    }
+                    self.dirty = true;
                 }
             }
         }
@@ -211,9 +269,7 @@ pub mod display {
                 }
                 DisplayMode::Chip8 => {
                     self.buf.iter_mut().for_each(|x| *x = 0);
-                    if let Some(window) = self.window.as_mut() {
-                        let _ = window.update_with_buffer(&self.buf, WINDOW_WIDTH, WINDOW_HEIGHT);
-                    }
+                    self.dirty = true;
                 }
             }
         }
@@ -238,7 +294,11 @@ pub mod display {
             if let Some(window) = self.window.as_mut() {
                 let _ = window.update();
                 if capture_text {
-                    text_bytes.extend(collect_text_input(window));
+                    if let Some(queue) = self.input_queue.as_ref() {
+                        drain_input_queue(queue, &mut text_bytes);
+                    } else {
+                        text_bytes.extend(collect_text_input(window));
+                    }
                 }
                 for (key, chip) in mapping {
                     let down = window.is_key_down(key);
@@ -321,9 +381,7 @@ pub mod display {
                 }
             }
 
-            if let Some(window) = self.window.as_mut() {
-                let _ = window.update_with_buffer(&self.buf, WINDOW_WIDTH, WINDOW_HEIGHT);
-            }
+            self.dirty = true;
         }
 
         fn toggle_pixel(&mut self, regs: &mut Registers, logical_x: usize, logical_y: usize) {
@@ -351,6 +409,33 @@ pub mod display {
     }
 
     impl DisplayWindow {
+        fn refresh_hz_for_mode(&self) -> u32 {
+            match self.mode {
+                DisplayMode::Chip8 => self.refresh_hz_chip8,
+                DisplayMode::Console => self.refresh_hz_console,
+            }
+        }
+
+        fn refresh_interval(&self) -> Duration {
+            let hz = self.refresh_hz_for_mode().max(1);
+            Duration::from_micros(1_000_000 / hz as u64)
+        }
+
+        fn present_due(&mut self) {
+            if !self.dirty {
+                return;
+            }
+            let interval = self.refresh_interval();
+            if self.last_present.elapsed() < interval {
+                return;
+            }
+            if let Some(window) = self.window.as_mut() {
+                let _ = window.update_with_buffer(&self.buf, WINDOW_WIDTH, WINDOW_HEIGHT);
+            }
+            self.last_present = Instant::now();
+            self.dirty = false;
+        }
+
         fn render_console(&mut self) {
             self.buf.iter_mut().for_each(|px| *px = BLACK);
             for row in 0..self.console.rows {
@@ -361,13 +446,7 @@ pub mod display {
                 }
             }
 
-            if let Some(window) = self.window.as_mut() {
-                let _ = window.update_with_buffer(&self.buf, WINDOW_WIDTH, WINDOW_HEIGHT);
-                let text_bytes = collect_text_input(window);
-                if !text_bytes.is_empty() {
-                    self.text_input.extend(text_bytes);
-                }
-            }
+            self.dirty = true;
         }
 
         fn draw_glyph(&mut self, col: usize, row: usize, ch: u8) {
@@ -407,6 +486,10 @@ pub mod display {
             DisplayWindow::draw_sprite(self, regs, sprite, x_pos, y_pos);
         }
 
+        fn present_if_due(&mut self) {
+            self.present_due();
+        }
+
         fn is_key_down(&self, key: u8) -> bool {
             self.key_down
                 .get(key as usize)
@@ -436,6 +519,15 @@ pub mod display {
 
         fn mode(&self) -> DisplayMode {
             self.mode
+        }
+
+        fn refresh_hz(&self) -> u32 {
+            self.refresh_hz_for_mode()
+        }
+
+        fn set_refresh_hz(&mut self, chip8_hz: u32, console_hz: u32) {
+            self.refresh_hz_chip8 = chip8_hz;
+            self.refresh_hz_console = console_hz;
         }
     }
 
@@ -516,6 +608,14 @@ pub mod display {
             }
         }
         text_bytes
+    }
+
+    fn drain_input_queue(queue: &Arc<Mutex<VecDeque<u8>>>, out: &mut Vec<u8>) {
+        if let Ok(mut guard) = queue.lock() {
+            while let Some(byte) = guard.pop_front() {
+                out.push(byte);
+            }
+        }
     }
 
     fn key_to_ascii(key: Key, shift: bool) -> Option<u8> {
