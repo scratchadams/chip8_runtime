@@ -505,19 +505,19 @@ and optional CHIP-8 extensions if you want to pass the full suite of tests.
 
 ---
 
-## 13) Debug Interfaces (Planned)
+## 13) Debug Interfaces (Implemented + Evolving)
 
-The roadmap calls for a syscall-based debug interface that a Chip-8 debugger ROM
-can use to inspect live processes. The planned surface includes:
+Debugging is syscall-based so an in-ROM debugger can inspect live processes.
+Current capabilities:
 
-- List processes and basic metadata.
-- Read/write registers (full context snapshot).
-- Read/write memory ranges.
-- Structured dumps (full register state, process tables, memory ranges).
-- A trace ring buffer with scheduler/syscall event records.
+- List processes and basic metadata (`dbg_list`).
+- Read registers (`dbg_regs`).
+- Read/write memory (`dbg_mem_read` / `dbg_mem_write`).
+- Trace ring buffer for scheduler + syscall events (`dbg_trace_read`).
 
-The intention is to keep debugging capabilities in-band (syscalls) so a ROM can
-act as a userland debugger without host-only tooling.
+The debugger ROM in `roms/debugger/` consumes the trace stream, applies a
+startup filter, and performs a one-time inspection pass (list → regs → mem)
+before streaming decoded trace lines.
 
 ---
 

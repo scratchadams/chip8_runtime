@@ -390,6 +390,11 @@ Where to look:
 - `SYSCALLS.md` (debug ABI layout)
 - `roms/debugger/` (trace viewer ROM)
 
+Debugger ROM behavior (current):
+- Prompts once for filter settings (kind + pid) at startup.
+- Decodes scheduler/syscall trace records into readable lines.
+- Runs a one-time inspection pass (list → regs → memory dump) before streaming.
+
 ---
 
 ## 16) Practical Reading Guide

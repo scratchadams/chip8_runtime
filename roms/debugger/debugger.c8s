@@ -1,5 +1,5 @@
 # Chip-8 Debugger ROM (trace viewer)
-# Reads kernel trace records via dbg_trace_read and prints hex dumps.
+# Reads kernel trace records via dbg_trace_read and prints decoded lines.
 
 section code @ 0x200 {
   label main {
@@ -8,8 +8,109 @@ section code @ 0x200 {
     v2 := 0x01
     call sys_console_mode
 
+    # Line-oriented input for filter config.
+    v1 := 0x00
+    v2 := 0x00
+    call sys_input_mode
+
+    call init_filters
     call print_headers
+    call inspect_target
     jump main_loop
+  }
+
+  label init_filters {
+    # defaults: kind=all, pid=none
+    v0 := 0x03
+    i := FILTER_KIND
+    save v0
+    v0 := 0xFF
+    i := FILTER_PID
+    save v0
+
+    # prompt for filter line
+    v1 := 0x08
+    v2 := 0xA6
+    v3 := 0x00
+    v4 := 0x13
+    call sys_write
+
+    v1 := 0x08
+    v2 := 0x44
+    v3 := 0x00
+    v4 := 0x08
+    call sys_read
+    if vF != 0x00 then jump init_filters_done
+
+    # parse kind from LINE_BUF[0]
+    i := LINE_BUF
+    load v0
+    v1 := v0
+    if v1 == 0x73 then jump kind_sched
+    if v1 == 0x79 then jump kind_sys
+    jump kind_all
+  }
+
+  label kind_sched {
+    v0 := 0x01
+    jump kind_store
+  }
+
+  label kind_sys {
+    v0 := 0x02
+    jump kind_store
+  }
+
+  label kind_all {
+    v0 := 0x03
+  }
+
+  label kind_store {
+    i := FILTER_KIND
+    save v0
+
+    # parse pid from LINE_BUF[2..3]
+    i := LINE_BUF
+    v1 := 0x02
+    i += v1
+    load v0
+    if v0 == 0x2D then jump pid_none
+
+    v1 := v0
+    call hex_to_nibble
+    if vE != 0x00 then jump pid_none
+    v2 := v0
+
+    i := LINE_BUF
+    v1 := 0x03
+    i += v1
+    load v0
+    v1 := v0
+    call hex_to_nibble
+    if vE != 0x00 then jump pid_none
+    v3 := v0
+
+    # v2 = high nibble, v3 = low nibble
+    v0 := v2
+    v0 += v0
+    v0 += v0
+    v0 += v0
+    v0 += v0
+    v0 += v3
+    i := FILTER_PID
+    save v0
+    return
+  }
+
+  label init_filters_done {
+    return
+  }
+
+  label pid_none {
+    v0 := 0xFF
+    i := FILTER_PID
+    save v0
+    return
   }
 
   label main_loop {
@@ -27,6 +128,119 @@ section code @ 0x200 {
     v8 := 0x00
   }
 
+  label inspect_target {
+    # list processes into LIST_BUF (max 1)
+    v1 := 0x08
+    v2 := 0x5E
+    v3 := 0x00
+    v4 := 0x01
+    call sys_dbg_list
+    if vF != 0x00 then jump inspect_done
+    if v0 == 0x00 then jump inspect_done
+
+    # load first record (pid is low 16 bits of u32)
+    i := LIST_BUF
+    load v7
+    v6 := v2
+    v7 := v3
+
+    v1 := 0x09
+    v2 := 0x40
+    v3 := 0x00
+    v4 := 0x0B
+    call sys_write
+
+    v0 := v6
+    v1 := v7
+    call print_hex_word
+    call print_newline
+
+    # read regs into REGS_BUF
+    v1 := v6
+    v2 := v7
+    v3 := 0x08
+    v4 := 0x7E
+    call sys_dbg_regs
+    if vF != 0x00 then jump inspect_done
+
+    i := REGS_BUF
+    load v5
+    v8 := v2
+    v9 := v3
+    vA := v4
+    vB := v5
+
+    v1 := 0x09
+    v2 := 0x4B
+    v3 := 0x00
+    v4 := 0x08
+    call sys_write
+
+    call print_hex_word
+
+    v1 := 0x09
+    v2 := 0x53
+    v3 := 0x00
+    v4 := 0x04
+    call sys_write
+
+    v0 := v8
+    v1 := v9
+    call print_hex_word
+
+    v1 := 0x09
+    v2 := 0x57
+    v3 := 0x00
+    v4 := 0x03
+    call sys_write
+
+    v0 := vA
+    v1 := vB
+    call print_hex_word
+    call print_newline
+
+    # read 16 bytes at 0x0200 into MEM_BUF
+    v1 := v6
+    v2 := v7
+    v3 := 0x02
+    v4 := 0x00
+    v5 := 0x00
+    v6 := 0x10
+    v7 := 0x08
+    v8 := 0x96
+    call sys_dbg_mem_read
+    if vF != 0x00 then jump inspect_done
+
+    v1 := 0x09
+    v2 := 0x5A
+    v3 := 0x00
+    v4 := 0x09
+    call sys_write
+
+    i := MEM_BUF
+    v5 := 0x00
+    v6 := 0x10
+  }
+
+  label mem_loop {
+    if v5 == v6 then jump mem_done
+    load v0
+    call print_hex_byte
+    v5 += 0x01
+    if v5 == v6 then jump mem_done
+    call print_space
+    jump mem_loop
+  }
+
+  label mem_done {
+    call print_newline
+    return
+  }
+
+  label inspect_done {
+    return
+  }
+
   label record_loop {
     if v8 == v9 then jump main_loop
 
@@ -38,39 +252,103 @@ section code @ 0x200 {
 
     i := TRACE_BUF
     i += v7
+    load v7
 
-    v6 := 0x00
-    v5 := 0x00
-  }
+    vA := v0
+    vB := v1
+    vC := v2
+    vD := v3
+    vE := v4
+    vF := v5
 
-  label byte_loop {
-    if v5 == 0x08 then jump emit_line
+    # filter by kind
+    i := FILTER_KIND
     load v0
-    call emit_hex
-    v5 += 0x01
-    if v5 == 0x08 then jump emit_line
-
-    v0 := 0x20
-    i := OUT_BUF
-    i += v6
-    save v0
-    v6 += 0x01
-    jump byte_loop
+    if v0 == 0x01 then jump filter_sched
+    if v0 == 0x02 then jump filter_sys
+    jump filter_pid
   }
 
-  label emit_line {
-    v0 := 0x0A
-    i := OUT_BUF
-    i += v6
-    save v0
-    v6 += 0x01
+  label filter_sched {
+    if vA != 0x01 then jump skip_record
+    jump filter_pid
+  }
 
+  label filter_sys {
+    if vA != 0x02 then jump skip_record
+  }
+
+  label filter_pid {
+    i := FILTER_PID
+    load v0
+    if v0 == 0xFF then jump emit_record
+    if vC != 0x00 then jump skip_record
+    if vD != v0 then jump skip_record
+  }
+
+  label emit_record {
+    if vA == 0x01 then jump emit_sched
+    if vA == 0x02 then jump emit_sys
+    jump skip_record
+  }
+
+  label emit_sched {
     v1 := 0x08
-    v2 := 0x40
+    v2 := 0xB9
     v3 := 0x00
-    v4 := v6
+    v4 := 0x0A
     call sys_write
 
+    v0 := vC
+    v1 := vD
+    call print_hex_word
+
+    v1 := 0x08
+    v2 := 0xCB
+    v3 := 0x00
+    v4 := 0x04
+    call sys_write
+
+    v0 := vB
+    call print_hex_byte
+    call print_newline
+    jump skip_record
+  }
+
+  label emit_sys {
+    v1 := 0x08
+    v2 := 0xC3
+    v3 := 0x00
+    v4 := 0x08
+    call sys_write
+
+    v0 := vC
+    v1 := vD
+    call print_hex_word
+
+    v1 := 0x08
+    v2 := 0xCF
+    v3 := 0x00
+    v4 := 0x04
+    call sys_write
+
+    v0 := vE
+    v1 := vF
+    call print_hex_word
+
+    v1 := 0x08
+    v2 := 0xD3
+    v3 := 0x00
+    v4 := 0x04
+    call sys_write
+
+    v0 := vB
+    call print_hex_byte
+    call print_newline
+    jump skip_record
+  }
+
+  label skip_record {
     v8 += 0x01
     jump record_loop
   }
@@ -82,7 +360,7 @@ section code @ 0x200 {
 
   label trace_error {
     v1 := 0x09
-    v2 := 0x40
+    v2 := 0x23
     v3 := 0x00
     v4 := 0x11
     call sys_write
@@ -90,43 +368,98 @@ section code @ 0x200 {
     jump main_loop
   }
 
-  # Convert byte in v0 into two hex chars appended to OUT_BUF at v6.
-  label emit_hex {
+  label print_newline {
+    v1 := 0x08
+    v2 := 0xD7
+    v3 := 0x00
+    v4 := 0x01
+    call sys_write
+    return
+  }
+
+  label print_space {
+    v0 := 0x20
+    i := OUT_BUF
+    save v0
+
+    v1 := 0x08
+    v2 := 0x40
+    v3 := 0x00
+    v4 := 0x01
+    call sys_write
+    return
+  }
+
+  # Print byte in v0 as two hex chars.
+  label print_hex_byte {
     v4 := v0
     v4 += v4
     i := HEX_PAIRS
     i += v4
     load v1
     i := OUT_BUF
-    i += v6
     save v1
-    v6 += 0x02
+
+    v1 := 0x08
+    v2 := 0x40
+    v3 := 0x00
+    v4 := 0x02
+    call sys_write
+    return
+  }
+
+  # Print word with hi byte in v0, lo byte in v1.
+  label print_hex_word {
+    v5 := v1
+    call print_hex_byte
+    v0 := v5
+    call print_hex_byte
+    return
+  }
+
+  # Convert hex char in v1 into nibble in v0. vE=0 on success.
+  label hex_to_nibble {
+    v0 := 0x00
+    vE := 0x01
+    i := HEX_CHARS
+    v6 := 0x00
+  }
+
+  label hex_loop {
+    load v0
+    if v0 == v1 then jump hex_match
+    v6 += 0x01
+    v0 := v6
+    if v0 == 0x10 then jump hex_done
+    jump hex_loop
+  }
+
+  label hex_match {
+    v0 := v6
+    vE := 0x00
+  }
+
+  label hex_done {
     return
   }
 
   label print_headers {
     v1 := 0x08
-    v2 := 0xB0
+    v2 := 0xD9
     v3 := 0x00
-    v4 := 0x1D
+    v4 := 0x16
     call sys_write
 
     v1 := 0x08
-    v2 := 0xCD
+    v2 := 0xEF
     v3 := 0x00
-    v4 := 0x17
-    call sys_write
-
-    v1 := 0x08
-    v2 := 0xE4
-    v3 := 0x00
-    v4 := 0x3A
+    v4 := 0x18
     call sys_write
 
     v1 := 0x09
-    v2 := 0x1E
+    v2 := 0x07
     v3 := 0x00
-    v4 := 0x22
+    v4 := 0x1C
     call sys_write
 
     return

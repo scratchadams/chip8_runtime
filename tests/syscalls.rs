@@ -215,6 +215,53 @@ fn sys_dbg_trace_read_reports_syscall() {
 }
 
 #[test]
+fn sys_dbg_trace_orders_spawn_before_syscall() {
+    set_headless();
+    let root = temp_root("dbg_trace_order");
+    let mut kernel = make_kernel(&root);
+
+    let target_pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
+    let debug_pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
+
+    {
+        let mut target = kernel.proc_mut(target_pid).unwrap();
+        write_opcode_at_pc(&mut target, 0x0104); // sys_yield
+    }
+    let _ = kernel.step_proc(target_pid).unwrap();
+
+    {
+        let mut debug = kernel.proc_mut(debug_pid).unwrap();
+        write_frame(&mut debug, 0x300, &[0x0340, 16]);
+        debug.regs.I = 0x300;
+        write_opcode_at_pc(&mut debug, 0x0134);
+    }
+    let outcome = kernel.step_proc(debug_pid).unwrap();
+    assert_eq!(outcome, SyscallOutcome::Completed);
+
+    let mut debug = kernel.proc_mut(debug_pid).unwrap();
+    let count = debug.regs.V[0] as usize;
+    assert!(count > 0);
+    let data = debug.read_bytes(0x0340, count * TRACE_RECORD_SIZE).unwrap();
+    let records = read_trace_records(&data, count);
+
+    let target = target_pid as u16;
+    let spawn_idx = records
+        .iter()
+        .position(|(kind, op, pid, _, _)| *kind == 0x01 && *op == 0x01 && *pid == target)
+        .expect("spawn record missing");
+    let syscall_idx = records
+        .iter()
+        .position(|(kind, op, pid, arg0, _)| {
+            *kind == 0x02 && *op == 0x02 && *pid == target && *arg0 == 0x0104
+        })
+        .expect("syscall record missing");
+
+    assert!(spawn_idx < syscall_idx);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
 fn sys_read_copies_input() {
     set_headless();
     let root = temp_root("read");

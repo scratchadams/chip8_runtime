@@ -168,4 +168,25 @@ section code {
     sys 0x0134
     return
   }
+
+  label sys_dbg_list {
+    call frame2
+    i := FRAME
+    sys 0x0130
+    return
+  }
+
+  label sys_dbg_regs {
+    call frame2
+    i := FRAME
+    sys 0x0131
+    return
+  }
+
+  label sys_dbg_mem_read {
+    call frame4
+    i := FRAME
+    sys 0x0132
+    return
+  }
 }

@@ -208,6 +208,26 @@ runtime, with preemption support and debugger-friendly surfaces.
   read-only inspection (write support comes next).
   - Implemented: debugger ROM trace viewer (`roms/debugger/`) for trace output.
 
+### Debug-Driven Baseline (OS-Layer Ready)
+
+We switch back to OS-layer focus once the debug substrate is reliable enough
+to support debugger-driven development. Acceptance criteria:
+
+1) **Trace fidelity**: deterministic tests validate scheduler/syscall event order
+   and record integrity.
+2) **Debugger ROM UX**: trace records are decoded to readable text (not just hex)
+   and can be filtered by pid and event type.
+3) **Inspection loop**: debugger ROM can list procs, read regs, and dump memory
+   ranges for a running target.
+4) **Docs complete**: `SYSCALLS.md`, `CODE_TOUR.md`, and `ARCHITECTURE.md` reflect
+   the final debug pipeline.
+
+Status:
+- Implemented: trace ordering tests and record integrity checks.
+- Implemented: debugger ROM decodes trace records and filters by kind + pid.
+- Implemented: debugger ROM performs list/regs/mem inspection on startup.
+- In progress: keep docs synchronized as the debugger ROM evolves.
+
 ### Milestone success
 
 - Preemptive scheduling works with deterministic time slices.
