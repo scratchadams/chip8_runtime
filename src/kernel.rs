@@ -1,5 +1,5 @@
 pub mod kernel {
-    use std::collections::{HashMap, VecDeque};
+    use std::collections::{HashMap, HashSet, VecDeque};
     use std::fs;
     use std::io::{self, Error, ErrorKind, Read, Write};
     use std::path::{Component, Path, PathBuf};
@@ -87,6 +87,84 @@ pub mod kernel {
     }
 
     #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    pub enum SchedulerEvent {
+        Spawned,
+        Unblocked,
+        Yielded,
+        Preempted,
+    }
+
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    pub enum ScheduleReason {
+        Yielded,
+        Blocked,
+        Exited,
+        Preempted,
+    }
+
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    pub enum ScheduleOutcome {
+        Idle,
+        Ran { pid: u32, reason: ScheduleReason },
+    }
+
+    pub trait SchedulerPolicy: Send {
+        fn on_runnable(&mut self, pid: u32, event: SchedulerEvent);
+        fn on_blocked(&mut self, pid: u32);
+        fn on_exit(&mut self, pid: u32);
+        fn next(&mut self) -> Option<u32>;
+        #[allow(dead_code)]
+        fn has_runnable(&self) -> bool;
+    }
+
+    #[derive(Default)]
+    pub struct RoundRobinScheduler {
+        queue: VecDeque<u32>,
+        queued: HashSet<u32>,
+    }
+
+    impl RoundRobinScheduler {
+        fn enqueue(&mut self, pid: u32) {
+            if self.queued.insert(pid) {
+                self.queue.push_back(pid);
+            }
+        }
+
+        fn drop_pid(&mut self, pid: u32) {
+            if self.queued.remove(&pid) {
+                self.queue.retain(|&entry| entry != pid);
+            }
+        }
+    }
+
+    impl SchedulerPolicy for RoundRobinScheduler {
+        fn on_runnable(&mut self, pid: u32, _event: SchedulerEvent) {
+            self.enqueue(pid);
+        }
+
+        fn on_blocked(&mut self, pid: u32) {
+            self.drop_pid(pid);
+        }
+
+        fn on_exit(&mut self, pid: u32) {
+            self.drop_pid(pid);
+        }
+
+        fn next(&mut self) -> Option<u32> {
+            while let Some(pid) = self.queue.pop_front() {
+                if self.queued.remove(&pid) {
+                    return Some(pid);
+                }
+            }
+            None
+        }
+
+        fn has_runnable(&self) -> bool {
+            self.queue.iter().any(|pid| self.queued.contains(pid))
+        }
+    }
+
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
     pub enum ProcState {
         Running,
         Blocked,
@@ -123,6 +201,7 @@ pub mod kernel {
         pending_block: HashMap<u32, WaitTarget>,
         last_timer_tick: Instant,
         timeslice_steps: u32,
+        scheduler: Box<dyn SchedulerPolicy>,
     }
 
     impl Kernel {
@@ -144,6 +223,7 @@ pub mod kernel {
                 pending_block: HashMap::new(),
                 last_timer_tick: Instant::now(),
                 timeslice_steps: DEFAULT_TIMESLICE_STEPS,
+                scheduler: Box::new(RoundRobinScheduler::default()),
             })
         }
 
@@ -176,6 +256,17 @@ pub mod kernel {
             self.syscalls.register(id, handler)
         }
 
+        /// replace the scheduling policy and seed it with all runnable pids.
+        #[allow(dead_code)]
+        pub fn set_scheduler_policy(&mut self, mut policy: Box<dyn SchedulerPolicy>) {
+            for (&pid, entry) in self.procs.iter() {
+                if entry.state == ProcState::Running {
+                    policy.on_runnable(pid, SchedulerEvent::Spawned);
+                }
+            }
+            self.scheduler = policy;
+        }
+
         /// create a new Proc bound to this kernel's shared memory.
         pub fn spawn_proc(&mut self, display: DisplayWindow, pages: u16) -> Result<u32, Error> {
             let pid = self.next_pid;
@@ -203,6 +294,7 @@ pub mod kernel {
                     next_fd: 1,
                 },
             );
+            self.scheduler.on_runnable(pid, SchedulerEvent::Spawned);
             Ok(pid)
         }
 
@@ -230,6 +322,7 @@ pub mod kernel {
         }
 
         /// set the number of instruction steps each proc gets per scheduling slice.
+        #[allow(dead_code)]
         pub fn set_timeslice_steps(&mut self, steps: u32) {
             self.timeslice_steps = steps.max(1);
         }
@@ -279,6 +372,31 @@ pub mod kernel {
             Ok(outcome)
         }
 
+        /// schedule a single runnable pid using the current policy.
+        pub fn schedule_once(&mut self) -> Result<ScheduleOutcome, Error> {
+            self.poll_console_input();
+            let Some(pid) = self.next_runnable_pid() else {
+                return Ok(ScheduleOutcome::Idle);
+            };
+
+            let reason = self.run_proc_until_yield_or_block(pid)?;
+            match reason {
+                ScheduleReason::Yielded => {
+                    self.scheduler.on_runnable(pid, SchedulerEvent::Yielded);
+                }
+                ScheduleReason::Preempted => {
+                    self.scheduler.on_runnable(pid, SchedulerEvent::Preempted);
+                }
+                ScheduleReason::Blocked => {
+                    self.scheduler.on_blocked(pid);
+                }
+                ScheduleReason::Exited => {
+                    self.scheduler.on_exit(pid);
+                }
+            }
+            Ok(ScheduleOutcome::Ran { pid, reason })
+        }
+
         /// load a ROM into an existing process by pid.
         pub fn load_rom(&mut self, pid: u32, rom_path: &Path) -> Result<(), Error> {
             let entry = self
@@ -292,18 +410,7 @@ pub mod kernel {
         /// run the cooperative scheduler until no runnable procs remain.
         pub fn run(&mut self) -> Result<(), Error> {
             loop {
-                self.poll_console_input();
-                let mut ran_any = false;
-                let pids: Vec<u32> = self.procs.keys().copied().collect();
-                for pid in pids {
-                    if !self.is_runnable(pid) {
-                        continue;
-                    }
-                    ran_any = true;
-                    self.run_proc_until_yield_or_block(pid)?;
-                }
-
-                if ran_any {
+                if let ScheduleOutcome::Ran { .. } = self.schedule_once()? {
                     continue;
                 }
 
@@ -406,12 +513,12 @@ pub mod kernel {
             true
         }
 
-        fn run_proc_until_yield_or_block(&mut self, pid: u32) -> Result<(), Error> {
+        fn run_proc_until_yield_or_block(&mut self, pid: u32) -> Result<ScheduleReason, Error> {
             let slice = self.timeslice_steps.max(1);
             let mut steps = 0u32;
             loop {
                 if steps >= slice {
-                    break;
+                    return Ok(ScheduleReason::Preempted);
                 }
                 steps = steps.saturating_add(1);
                 let mut entry = self
@@ -420,7 +527,7 @@ pub mod kernel {
                     .ok_or_else(|| Error::new(ErrorKind::NotFound, "pid not found"))?;
                 if entry.state != ProcState::Running {
                     self.procs.insert(pid, entry);
-                    return Ok(());
+                    return Ok(ScheduleReason::Blocked);
                 }
 
                 let ticks = self.timer_ticks();
@@ -433,13 +540,31 @@ pub mod kernel {
                 }
 
                 self.apply_pending(pid, &mut entry, outcome);
-                let should_break = matches!(outcome, SyscallOutcome::Blocked | SyscallOutcome::Yielded);
+                let reason = match entry.state {
+                    ProcState::Exited => Some(ScheduleReason::Exited),
+                    ProcState::Blocked => Some(ScheduleReason::Blocked),
+                    ProcState::Running => {
+                        if outcome == SyscallOutcome::Yielded {
+                            Some(ScheduleReason::Yielded)
+                        } else {
+                            None
+                        }
+                    }
+                };
                 self.procs.insert(pid, entry);
-                if should_break {
-                    break;
+                if let Some(reason) = reason {
+                    return Ok(reason);
                 }
             }
-            Ok(())
+        }
+
+        fn next_runnable_pid(&mut self) -> Option<u32> {
+            while let Some(pid) = self.scheduler.next() {
+                if self.is_runnable(pid) {
+                    return Some(pid);
+                }
+            }
+            None
         }
 
         fn dispatch_syscall(&mut self, pid: u32, proc: &mut Proc, id: u16) -> Result<SyscallOutcome, Error> {
@@ -509,24 +634,30 @@ pub mod kernel {
         }
 
         fn unblock_waiters(&mut self, waited_pid: u32, code: u8) {
-            for entry in self.procs.values_mut() {
+            let mut unblocked = Vec::new();
+            for (&entry_pid, entry) in self.procs.iter_mut() {
                 if entry.state != ProcState::Blocked {
                     continue;
                 }
-                if let Some(WaitTarget::Pid(pid)) = entry.waiting_for {
-                    if pid == waited_pid {
+                if let Some(WaitTarget::Pid(wait_pid)) = entry.waiting_for {
+                    if wait_pid == waited_pid {
                         entry.proc.regs.V[0] = code;
                         entry.proc.regs.V[0xF] = 0;
                         entry.state = ProcState::Running;
                         entry.waiting_for = None;
+                        unblocked.push(entry_pid);
                     }
                 }
+            }
+            for pid in unblocked {
+                self.scheduler.on_runnable(pid, SchedulerEvent::Unblocked);
             }
         }
 
         fn unblock_readers(&mut self) {
             // console-backed readers: each proc has its own input queue.
-            for entry in self.procs.values_mut() {
+            let mut unblocked = Vec::new();
+            for (&pid, entry) in self.procs.iter_mut() {
                 if entry.state != ProcState::Blocked {
                     continue;
                 }
@@ -550,9 +681,10 @@ pub mod kernel {
                 }
                 entry.state = ProcState::Running;
                 entry.waiting_for = None;
+                unblocked.push(pid);
             }
 
-            for entry in self.procs.values_mut() {
+            for (&pid, entry) in self.procs.iter_mut() {
                 if entry.state != ProcState::Blocked {
                     continue;
                 }
@@ -576,16 +708,20 @@ pub mod kernel {
                 }
                 entry.state = ProcState::Running;
                 entry.waiting_for = None;
+                unblocked.push(pid);
             }
 
             if self.input.is_empty() {
+                for pid in unblocked {
+                    self.scheduler.on_runnable(pid, SchedulerEvent::Unblocked);
+                }
                 return;
             }
 
             let (procs, input) = (&mut self.procs, &mut self.input);
 
             // host-backed readers: line mode first, then byte mode.
-            for entry in procs.values_mut() {
+            for (&pid, entry) in procs.iter_mut() {
                 if entry.state != ProcState::Blocked {
                     continue;
                 }
@@ -609,9 +745,10 @@ pub mod kernel {
                 }
                 entry.state = ProcState::Running;
                 entry.waiting_for = None;
+                unblocked.push(pid);
             }
 
-            for entry in procs.values_mut() {
+            for (&pid, entry) in procs.iter_mut() {
                 if entry.state != ProcState::Blocked {
                     continue;
                 }
@@ -635,6 +772,11 @@ pub mod kernel {
                 }
                 entry.state = ProcState::Running;
                 entry.waiting_for = None;
+                unblocked.push(pid);
+            }
+
+            for pid in unblocked {
+                self.scheduler.on_runnable(pid, SchedulerEvent::Unblocked);
             }
         }
 

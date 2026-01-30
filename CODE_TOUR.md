@@ -260,11 +260,19 @@ Where to look:
 
 ---
 
-## 11) Scheduling and State Mutation in Rust
+## 11) Scheduling, Policies, and State Mutation
 
-The scheduler needs to mutate proc state without violating borrow rules.
+The scheduler needs to mutate proc state without violating borrow rules *and*
+remain policy-driven so we can swap strategies later.
 
-Technique used:
+How it works today:
+- A `SchedulerPolicy` (default: round-robin) owns ordering decisions.
+- `Kernel::schedule_once` asks the policy for a pid, then runs that proc until
+  it yields, blocks, exits, or is preempted by the time slice.
+- The kernel reports the outcome back to the policy via explicit events
+  (`Spawned`, `Unblocked`, `Yielded`, `Preempted`).
+
+Borrowing technique used:
 1. Remove the proc entry from the map.
 2. Mutate it.
 3. Insert it back.
@@ -272,7 +280,8 @@ Technique used:
 This avoids mutable and immutable borrows of the map at the same time.
 
 Where to look:
-- `Kernel::run_proc_until_yield_or_block` in `src/kernel.rs`.
+- `SchedulerPolicy`, `RoundRobinScheduler`, and `Kernel::schedule_once`
+  in `src/kernel.rs`.
 
 ---
 

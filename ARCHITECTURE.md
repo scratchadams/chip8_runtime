@@ -129,16 +129,16 @@ The host `Kernel` implements `InputDevice` and `FsDevice` so the core can
 eventually target alternative backends without changing opcode semantics.
 Console-mode input is polled continuously and buffered per process, so the CLI
 can accept keystrokes even while it is running (not just while blocked).
-Scheduling is currently cooperative but is being refactored toward a preemptive,
-policy-driven scheduler with explicit context switch boundaries.
-The kernel now enforces a configurable time slice (instruction-step budget per
-proc) to enable preemption while keeping timer ticks stable.
+Scheduling is policy-driven with explicit context switch boundaries. A
+time-sliced stepping loop provides preemption while keeping 60Hz timer ticks
+stable, and the policy layer controls which pid runs next.
 
 ```
 Kernel
 ├── mem: Arc<Mutex<SharedMemory>>
 ├── syscalls: SyscallTable
 ├── procs: HashMap<u32, ProcEntry>
+├── scheduler: Box<dyn SchedulerPolicy>
 └── next_pid: u32
 ```
 
@@ -158,11 +158,14 @@ main()
   ├─ Kernel::new(root_dir)
   ├─ Kernel::register_base_syscalls()
   ├─ Kernel::spawn_proc_from_name(..) for each ROM
-  └─ Kernel::run()  // cooperative scheduler
+  └─ Kernel::run()  // policy-driven scheduler
 ```
 
 The binary expects a root directory and one or more ROM names to run. ROM paths
 are resolved relative to the root and constrained to that directory tree.
+`Kernel::run()` loops on `schedule_once()`, which consults the scheduler policy
+to pick a pid and then runs that proc until it yields, blocks, exits, or is
+preempted by the time slice.
 
 ### 4.2 Fetch-Decode-Execute Loop
 
