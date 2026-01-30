@@ -678,6 +678,7 @@ pub mod kernel {
                         entry.proc.regs.V[0xF] = 0;
                         entry.state = ProcState::Running;
                         entry.waiting_for = None;
+                        entry.context = entry.proc.context();
                         unblocked.push(entry_pid);
                     }
                 }
@@ -714,6 +715,7 @@ pub mod kernel {
                 }
                 entry.state = ProcState::Running;
                 entry.waiting_for = None;
+                entry.context = entry.proc.context();
                 unblocked.push(pid);
             }
 
@@ -741,6 +743,7 @@ pub mod kernel {
                 }
                 entry.state = ProcState::Running;
                 entry.waiting_for = None;
+                entry.context = entry.proc.context();
                 unblocked.push(pid);
             }
 
@@ -778,6 +781,7 @@ pub mod kernel {
                 }
                 entry.state = ProcState::Running;
                 entry.waiting_for = None;
+                entry.context = entry.proc.context();
                 unblocked.push(pid);
             }
 
@@ -805,6 +809,7 @@ pub mod kernel {
                 }
                 entry.state = ProcState::Running;
                 entry.waiting_for = None;
+                entry.context = entry.proc.context();
                 unblocked.push(pid);
             }
 
