@@ -84,6 +84,7 @@ Error codes currently in use:
 0x0131 = dbg_regs
 0x0132 = dbg_mem_read
 0x0133 = dbg_mem_write
+0x0134 = dbg_trace_read
 ```
 
 ---
@@ -419,6 +420,60 @@ Returns:
 ```
 V0 = bytes written (low 8 bits)
 VF = 0 on success, 1 on error
+```
+
+### 0x0134 dbg_trace_read
+
+Args:
+```
+arg0 = out buffer pointer
+arg1 = max records to read
+```
+
+Returns:
+```
+V0 = records written (0 if none)
+VF = 0 on success, 1 on error
+```
+
+Notes:
+- Non-blocking: returns 0 if no records are available.
+- Records are consumed from the kernel trace ring buffer.
+- Each record is **8 bytes**.
+- The kernel does not emit trace records for `dbg_trace_read` itself to avoid
+  trace feedback loops.
+
+Record layout (8 bytes):
+```
+byte0 = kind
+byte1 = op
+byte2..3 = pid (u16, big-endian, low 16 bits)
+byte4..5 = arg0 (u16)
+byte6..7 = arg1 (u16)
+```
+
+Kinds:
+```
+0x01 = scheduler event
+0x02 = syscall event
+```
+
+Scheduler op codes:
+```
+0x01 = spawned
+0x02 = unblocked
+0x03 = yielded
+0x04 = preempted
+0x05 = blocked
+0x06 = exited
+```
+
+Syscall op codes:
+```
+0x01 = completed
+0x02 = yielded
+0x03 = blocked
+0x04 = error
 ```
 
 ---

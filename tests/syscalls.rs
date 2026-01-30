@@ -10,6 +10,7 @@ use chip8_runtime::shared_memory::shared_memory::SharedMemory;
 
 const MAX_FILENAME_LEN: usize = 64;
 const DIR_ENTRY_SIZE: usize = 1 + MAX_FILENAME_LEN + 1 + 4;
+const TRACE_RECORD_SIZE: usize = 8;
 
 static INIT: Once = Once::new();
 
@@ -93,6 +94,20 @@ fn read_u16_be(buf: &[u8], offset: usize) -> u16 {
     u16::from_be_bytes([buf[offset], buf[offset + 1]])
 }
 
+fn read_trace_records(buf: &[u8], count: usize) -> Vec<(u8, u8, u16, u16, u16)> {
+    let mut records = Vec::new();
+    for idx in 0..count {
+        let base = idx * TRACE_RECORD_SIZE;
+        let kind = buf[base];
+        let op = buf[base + 1];
+        let pid = read_u16_be(buf, base + 2);
+        let arg0 = read_u16_be(buf, base + 4);
+        let arg1 = read_u16_be(buf, base + 6);
+        records.push((kind, op, pid, arg0, arg1));
+    }
+    records
+}
+
 #[test]
 fn sys_write_sets_v0_and_vf() {
     set_headless();
@@ -157,6 +172,44 @@ fn sys_dbg_regs_reads_target() {
     assert_eq!(data[7], 0xBB);
     assert_eq!(data[22], 0x11);
     assert_eq!(data[23], 0x22);
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn sys_dbg_trace_read_reports_syscall() {
+    set_headless();
+    let root = temp_root("dbg_trace");
+    let mut kernel = make_kernel(&root);
+
+    let target_pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
+    let debug_pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
+
+    {
+        let mut target = kernel.proc_mut(target_pid).unwrap();
+        write_opcode_at_pc(&mut target, 0x0104); // sys_yield
+    }
+    let _ = kernel.step_proc(target_pid).unwrap();
+
+    {
+        let mut debug = kernel.proc_mut(debug_pid).unwrap();
+        write_frame(&mut debug, 0x300, &[0x0340, 8]);
+        debug.regs.I = 0x300;
+        write_opcode_at_pc(&mut debug, 0x0134);
+    }
+    let outcome = kernel.step_proc(debug_pid).unwrap();
+    assert_eq!(outcome, SyscallOutcome::Completed);
+
+    let mut debug = kernel.proc_mut(debug_pid).unwrap();
+    let count = debug.regs.V[0] as usize;
+    assert!(count > 0);
+    let data = debug.read_bytes(0x0340, count * TRACE_RECORD_SIZE).unwrap();
+    let records = read_trace_records(&data, count);
+
+    let saw_yield = records.iter().any(|(kind, op, _pid, arg0, _)| {
+        *kind == 0x02 && *op == 0x02 && *arg0 == 0x0104
+    });
+    assert!(saw_yield);
 
     let _ = fs::remove_dir_all(root);
 }

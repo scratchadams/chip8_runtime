@@ -168,6 +168,7 @@ SYS 0x04: yield
 - Implemented: code tour reference for Rust concepts (`CODE_TOUR.md`).
 - Implemented: preemption + scheduler hook tests (`tests/scheduler.rs`).
 - Implemented: explicit register `Context` snapshot with save/restore boundary.
+- Implemented: trace ring buffer + `dbg_trace_read` syscall for scheduler/syscall events.
 - Remaining: build the CLI ROM to exercise I/O and spawn.
 
 ### Milestone success
@@ -201,9 +202,11 @@ runtime, with preemption support and debugger-friendly surfaces.
   - read/write registers
   - read/write memory (range)
   - structured dumps (full register state, process info, memory range)
+- Add a trace ring buffer and a syscall to read structured scheduler/syscall events.
 - Define a syscall ABI and record layout in `SYSCALLS.md`.
 - Create a minimal “debugger ROM” that attaches to a target pid and performs
   read-only inspection (write support comes next).
+  - Implemented: debugger ROM trace viewer (`roms/debugger/`) for trace output.
 
 ### Milestone success
 

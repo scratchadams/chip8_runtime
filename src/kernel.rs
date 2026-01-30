@@ -32,6 +32,7 @@ pub mod kernel {
     const SYS_DBG_REGS: u16 = 0x0131;
     const SYS_DBG_MEM_READ: u16 = 0x0132;
     const SYS_DBG_MEM_WRITE: u16 = 0x0133;
+    const SYS_DBG_TRACE_READ: u16 = 0x0134;
 
     const ERR_INVALID: u8 = 0x02;
     const ERR_IO: u8 = 0x03;
@@ -51,6 +52,23 @@ pub mod kernel {
     const DBG_REGS_SIZE: usize = 24;
     const DEFAULT_TIMESLICE_STEPS: u32 = 200;
     const DEBUG_INPUT_ENV: &str = "CHIP8_DEBUG_INPUT";
+    const TRACE_RECORD_SIZE: usize = 8;
+    const TRACE_DEFAULT_CAPACITY: usize = 1024;
+
+    const TRACE_KIND_SCHED: u8 = 0x01;
+    const TRACE_KIND_SYSCALL: u8 = 0x02;
+
+    const TRACE_SCHED_SPAWNED: u8 = 0x01;
+    const TRACE_SCHED_UNBLOCKED: u8 = 0x02;
+    const TRACE_SCHED_YIELDED: u8 = 0x03;
+    const TRACE_SCHED_PREEMPTED: u8 = 0x04;
+    const TRACE_SCHED_BLOCKED: u8 = 0x05;
+    const TRACE_SCHED_EXITED: u8 = 0x06;
+
+    const TRACE_SYSCALL_COMPLETED: u8 = 0x01;
+    const TRACE_SYSCALL_YIELDED: u8 = 0x02;
+    const TRACE_SYSCALL_BLOCKED: u8 = 0x03;
+    const TRACE_SYSCALL_ERROR: u8 = 0x04;
 
     pub type SyscallHandler =
         Arc<dyn Fn(&mut Kernel, u32, &mut Proc) -> SyscallOutcome + Send + Sync>;
@@ -227,6 +245,56 @@ pub mod kernel {
         last_timer_tick: Instant,
         timeslice_steps: u32,
         scheduler: Box<dyn SchedulerPolicy>,
+        trace: TraceBuffer,
+    }
+
+    struct TraceBuffer {
+        records: Vec<[u8; TRACE_RECORD_SIZE]>,
+        head: usize,
+        tail: usize,
+        len: usize,
+    }
+
+    impl TraceBuffer {
+        fn new(capacity: usize) -> TraceBuffer {
+            let cap = capacity.max(1);
+            TraceBuffer {
+                records: vec![[0u8; TRACE_RECORD_SIZE]; cap],
+                head: 0,
+                tail: 0,
+                len: 0,
+            }
+        }
+
+        fn push(&mut self, record: [u8; TRACE_RECORD_SIZE]) {
+            let cap = self.records.len();
+            if cap == 0 {
+                return;
+            }
+            self.records[self.head] = record;
+            if self.len == cap {
+                self.tail = (self.tail + 1) % cap;
+            } else {
+                self.len += 1;
+            }
+            self.head = (self.head + 1) % cap;
+        }
+
+        fn pop_many(&mut self, max: usize) -> Vec<[u8; TRACE_RECORD_SIZE]> {
+            let count = max.min(self.len);
+            let mut out = Vec::with_capacity(count);
+            for _ in 0..count {
+                let record = self.records[self.tail];
+                out.push(record);
+                self.tail = (self.tail + 1) % self.records.len();
+                self.len -= 1;
+            }
+            out
+        }
+
+        fn len(&self) -> usize {
+            self.len
+        }
     }
 
     impl Kernel {
@@ -249,6 +317,7 @@ pub mod kernel {
                 last_timer_tick: Instant::now(),
                 timeslice_steps: DEFAULT_TIMESLICE_STEPS,
                 scheduler: Box::new(RoundRobinScheduler::default()),
+                trace: TraceBuffer::new(TRACE_DEFAULT_CAPACITY),
             })
         }
 
@@ -270,6 +339,7 @@ pub mod kernel {
             self.register_syscall(SYS_DBG_REGS, sys_dbg_regs)?;
             self.register_syscall(SYS_DBG_MEM_READ, sys_dbg_mem_read)?;
             self.register_syscall(SYS_DBG_MEM_WRITE, sys_dbg_mem_write)?;
+            self.register_syscall(SYS_DBG_TRACE_READ, sys_dbg_trace_read)?;
             Ok(())
         }
 
@@ -279,6 +349,25 @@ pub mod kernel {
             H: Fn(&mut Kernel, u32, &mut Proc) -> SyscallOutcome + Send + Sync + 'static,
         {
             self.syscalls.register(id, handler)
+        }
+
+        fn trace_record(&mut self, kind: u8, op: u8, pid: u32, arg0: u16, arg1: u16) {
+            let mut record = [0u8; TRACE_RECORD_SIZE];
+            record[0] = kind;
+            record[1] = op;
+            let pid16 = (pid & 0xFFFF) as u16;
+            record[2..4].copy_from_slice(&pid16.to_be_bytes());
+            record[4..6].copy_from_slice(&arg0.to_be_bytes());
+            record[6..8].copy_from_slice(&arg1.to_be_bytes());
+            self.trace.push(record);
+        }
+
+        fn trace_sched(&mut self, pid: u32, event: u8) {
+            self.trace_record(TRACE_KIND_SCHED, event, pid, 0, 0);
+        }
+
+        fn trace_syscall(&mut self, pid: u32, id: u16, outcome: u8) {
+            self.trace_record(TRACE_KIND_SYSCALL, outcome, pid, id, 0);
         }
 
         /// replace the scheduling policy and seed it with all runnable pids.
@@ -322,6 +411,7 @@ pub mod kernel {
                 },
             );
             self.scheduler.on_runnable(pid, SchedulerEvent::Spawned);
+            self.trace_sched(pid, TRACE_SCHED_SPAWNED);
             Ok(pid)
         }
 
@@ -413,15 +503,19 @@ pub mod kernel {
             let reason = self.run_proc_until_yield_or_block(pid)?;
             match reason {
                 ScheduleReason::Yielded => {
+                    self.trace_sched(pid, TRACE_SCHED_YIELDED);
                     self.scheduler.on_runnable(pid, SchedulerEvent::Yielded);
                 }
                 ScheduleReason::Preempted => {
+                    self.trace_sched(pid, TRACE_SCHED_PREEMPTED);
                     self.scheduler.on_runnable(pid, SchedulerEvent::Preempted);
                 }
                 ScheduleReason::Blocked => {
+                    self.trace_sched(pid, TRACE_SCHED_BLOCKED);
                     self.scheduler.on_blocked(pid);
                 }
                 ScheduleReason::Exited => {
+                    self.trace_sched(pid, TRACE_SCHED_EXITED);
                     self.scheduler.on_exit(pid);
                 }
             }
@@ -603,9 +697,23 @@ pub mod kernel {
         fn dispatch_syscall(&mut self, pid: u32, proc: &mut Proc, id: u16) -> Result<SyscallOutcome, Error> {
             let handler = self
                 .syscalls
-                .handler(id)
-                .ok_or_else(|| Error::new(ErrorKind::NotFound, "unknown syscall id"))?;
-            Ok(handler(self, pid, proc))
+                .handler(id);
+            let Some(handler) = handler else {
+                if id != SYS_DBG_TRACE_READ {
+                    self.trace_syscall(pid, id, TRACE_SYSCALL_ERROR);
+                }
+                return Err(Error::new(ErrorKind::NotFound, "unknown syscall id"));
+            };
+            let outcome = handler(self, pid, proc);
+            let trace_outcome = match outcome {
+                SyscallOutcome::Completed => TRACE_SYSCALL_COMPLETED,
+                SyscallOutcome::Yielded => TRACE_SYSCALL_YIELDED,
+                SyscallOutcome::Blocked => TRACE_SYSCALL_BLOCKED,
+            };
+            if id != SYS_DBG_TRACE_READ {
+                self.trace_syscall(pid, id, trace_outcome);
+            }
+            Ok(outcome)
         }
 
         fn apply_pending(&mut self, pid: u32, entry: &mut ProcEntry, outcome: SyscallOutcome) {
@@ -684,6 +792,7 @@ pub mod kernel {
                 }
             }
             for pid in unblocked {
+                self.trace_sched(pid, TRACE_SCHED_UNBLOCKED);
                 self.scheduler.on_runnable(pid, SchedulerEvent::Unblocked);
             }
         }
@@ -749,6 +858,7 @@ pub mod kernel {
 
             if self.input.is_empty() {
                 for pid in unblocked {
+                    self.trace_sched(pid, TRACE_SCHED_UNBLOCKED);
                     self.scheduler.on_runnable(pid, SchedulerEvent::Unblocked);
                 }
                 return;
@@ -814,6 +924,7 @@ pub mod kernel {
             }
 
             for pid in unblocked {
+                self.trace_sched(pid, TRACE_SCHED_UNBLOCKED);
                 self.scheduler.on_runnable(pid, SchedulerEvent::Unblocked);
             }
         }
@@ -1790,6 +1901,48 @@ pub mod kernel {
         }
 
         proc.regs.V[0] = data.len().min(0xFF) as u8;
+        proc.regs.V[0xF] = 0;
+        SyscallOutcome::Completed
+    }
+
+    fn sys_dbg_trace_read(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let out_ptr = match Kernel::syscall_arg(proc, 0) {
+            Ok(val) => val,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let max_records = match Kernel::syscall_arg(proc, 1) {
+            Ok(val) => val as usize,
+            Err(_) => {
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        let count = max_records.min(kernel.trace.len());
+        let records = kernel.trace.pop_many(count);
+        if records.is_empty() {
+            proc.regs.V[0] = 0;
+            proc.regs.V[0xF] = 0;
+            return SyscallOutcome::Completed;
+        }
+
+        let mut data = Vec::with_capacity(records.len() * TRACE_RECORD_SIZE);
+        for record in records {
+            data.extend_from_slice(&record);
+        }
+
+        if proc.write_bytes(out_ptr as u32, &data).is_err() {
+            proc.regs.V[0] = ERR_INVALID;
+            proc.regs.V[0xF] = 1;
+            return SyscallOutcome::Completed;
+        }
+
+        proc.regs.V[0] = count.min(0xFF) as u8;
         proc.regs.V[0xF] = 0;
         SyscallOutcome::Completed
     }

@@ -383,10 +383,12 @@ Chip-8 debugger ROM can inspect running processes. The initial ABI includes:
 - `dbg_list` (enumerate processes + state)
 - `dbg_regs` (read full register snapshot)
 - `dbg_mem_read` / `dbg_mem_write` (memory inspection)
+- `dbg_trace_read` (read scheduler/syscall trace records)
 
 Where to look:
 - `src/kernel.rs` (debug syscall implementations)
 - `SYSCALLS.md` (debug ABI layout)
+- `roms/debugger/` (trace viewer ROM)
 
 ---
 

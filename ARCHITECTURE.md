@@ -141,6 +141,7 @@ Kernel
 ├── syscalls: SyscallTable
 ├── procs: HashMap<u32, ProcEntry>
 ├── scheduler: Box<dyn SchedulerPolicy>
+├── trace: TraceBuffer
 └── next_pid: u32
 ```
 
@@ -513,6 +514,7 @@ can use to inspect live processes. The planned surface includes:
 - Read/write registers (full context snapshot).
 - Read/write memory ranges.
 - Structured dumps (full register state, process tables, memory ranges).
+- A trace ring buffer with scheduler/syscall event records.
 
 The intention is to keep debugging capabilities in-band (syscalls) so a ROM can
 act as a userland debugger without host-only tooling.

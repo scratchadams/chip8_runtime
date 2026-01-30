@@ -1,0 +1,134 @@
+# Chip-8 Debugger ROM (trace viewer)
+# Reads kernel trace records via dbg_trace_read and prints hex dumps.
+
+section code @ 0x200 {
+  label main {
+    # Route output to a display-backed console.
+    v1 := 0x00
+    v2 := 0x01
+    call sys_console_mode
+
+    call print_headers
+    jump main_loop
+  }
+
+  label main_loop {
+    # Read trace records into TRACE_BUF.
+    v1 := 0x08
+    v2 := 0x00
+    v3 := 0x00
+    v4 := 0x08
+    call sys_dbg_trace_read
+
+    if vF != 0x00 then jump trace_error
+    v9 := v0
+    if v9 == 0x00 then jump idle
+
+    v8 := 0x00
+  }
+
+  label record_loop {
+    if v8 == v9 then jump main_loop
+
+    # Compute record offset = index * 8 into v7.
+    v7 := v8
+    v7 += v7
+    v7 += v7
+    v7 += v7
+
+    i := TRACE_BUF
+    i += v7
+
+    v6 := 0x00
+    v5 := 0x00
+  }
+
+  label byte_loop {
+    if v5 == 0x08 then jump emit_line
+    load v0
+    call emit_hex
+    v5 += 0x01
+    if v5 == 0x08 then jump emit_line
+
+    v0 := 0x20
+    i := OUT_BUF
+    i += v6
+    save v0
+    v6 += 0x01
+    jump byte_loop
+  }
+
+  label emit_line {
+    v0 := 0x0A
+    i := OUT_BUF
+    i += v6
+    save v0
+    v6 += 0x01
+
+    v1 := 0x08
+    v2 := 0x40
+    v3 := 0x00
+    v4 := v6
+    call sys_write
+
+    v8 += 0x01
+    jump record_loop
+  }
+
+  label idle {
+    call sys_yield
+    jump main_loop
+  }
+
+  label trace_error {
+    v1 := 0x09
+    v2 := 0x40
+    v3 := 0x00
+    v4 := 0x11
+    call sys_write
+    call sys_yield
+    jump main_loop
+  }
+
+  # Convert byte in v0 into two hex chars appended to OUT_BUF at v6.
+  label emit_hex {
+    v4 := v0
+    v4 += v4
+    i := HEX_PAIRS
+    i += v4
+    load v1
+    i := OUT_BUF
+    i += v6
+    save v1
+    v6 += 0x02
+    return
+  }
+
+  label print_headers {
+    v1 := 0x08
+    v2 := 0xB0
+    v3 := 0x00
+    v4 := 0x1D
+    call sys_write
+
+    v1 := 0x08
+    v2 := 0xCD
+    v3 := 0x00
+    v4 := 0x17
+    call sys_write
+
+    v1 := 0x08
+    v2 := 0xE4
+    v3 := 0x00
+    v4 := 0x3A
+    call sys_write
+
+    v1 := 0x09
+    v2 := 0x1E
+    v3 := 0x00
+    v4 := 0x22
+    call sys_write
+
+    return
+  }
+}
