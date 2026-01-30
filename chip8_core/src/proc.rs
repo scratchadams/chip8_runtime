@@ -47,6 +47,17 @@ pub mod proc {
         pub PC: u16,
     }
 
+    #[allow(non_snake_case)]
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    pub struct Context {
+        pub V: [u8; 16],
+        pub DT: u8,
+        pub ST: u8,
+        pub I: u16,
+        pub SP: u16,
+        pub PC: u16,
+    }
+
     impl Default for Registers {
         fn default() -> Registers {
             Registers {
@@ -60,7 +71,27 @@ pub mod proc {
         }
     }
 
-    impl Registers {}
+    impl Registers {
+        pub fn snapshot(&self) -> Context {
+            Context {
+                V: self.V,
+                DT: self.DT,
+                ST: self.ST,
+                I: self.I,
+                SP: self.SP,
+                PC: self.PC,
+            }
+        }
+
+        pub fn restore(&mut self, ctx: &Context) {
+            self.V = ctx.V;
+            self.DT = ctx.DT;
+            self.ST = ctx.ST;
+            self.I = ctx.I;
+            self.SP = ctx.SP;
+            self.PC = ctx.PC;
+        }
+    }
 
     #[derive(Copy, Clone, Debug, PartialEq, Eq)]
     pub enum InputMode {
@@ -109,6 +140,16 @@ pub mod proc {
                 console_mode: ConsoleMode::Host,
                 console_input: VecDeque::new(),
             })
+        }
+
+        /// capture a full register snapshot for scheduler/debug boundaries.
+        pub fn context(&self) -> Context {
+            self.regs.snapshot()
+        }
+
+        /// restore registers from a snapshot at a context switch boundary.
+        pub fn restore_context(&mut self, ctx: &Context) {
+            self.regs.restore(ctx);
         }
 
         // translate a virtual address into a physical address.

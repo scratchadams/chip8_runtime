@@ -8,7 +8,7 @@ pub mod kernel {
     use std::time::{Duration, Instant};
 
     use crate::display::display::{DisplayMode, DisplayWindow};
-    use crate::proc::proc::{ConsoleMode, InputMode, Proc};
+    use crate::proc::proc::{ConsoleMode, Context, InputMode, Proc};
     use crate::shared_memory::shared_memory::SharedMemory;
 
     pub use chip8_core::syscall::syscall::SyscallOutcome;
@@ -179,9 +179,34 @@ pub mod kernel {
 
     struct ProcEntry {
         proc: Proc,
+        context: Context,
         state: ProcState,
         exit_code: Option<u8>,
         waiting_for: Option<WaitTarget>,
+    }
+
+    pub struct ProcGuard<'a> {
+        entry: &'a mut ProcEntry,
+    }
+
+    impl<'a> std::ops::Deref for ProcGuard<'a> {
+        type Target = Proc;
+
+        fn deref(&self) -> &Proc {
+            &self.entry.proc
+        }
+    }
+
+    impl<'a> std::ops::DerefMut for ProcGuard<'a> {
+        fn deref_mut(&mut self) -> &mut Proc {
+            &mut self.entry.proc
+        }
+    }
+
+    impl<'a> Drop for ProcGuard<'a> {
+        fn drop(&mut self) {
+            self.entry.context = self.entry.proc.context();
+        }
     }
 
     struct FdTable {
@@ -277,11 +302,13 @@ pub mod kernel {
                 display,
                 pages,
             )?;
+            let context = proc.context();
 
             self.procs.insert(
                 pid,
                 ProcEntry {
                     proc,
+                    context,
                     state: ProcState::Running,
                     exit_code: None,
                     waiting_for: None,
@@ -335,8 +362,10 @@ pub mod kernel {
 
         #[allow(dead_code)]
         /// access a process by pid for mutation (tests/debug only).
-        pub fn proc_mut(&mut self, pid: u32) -> Option<&mut Proc> {
-            self.procs.get_mut(&pid).map(|entry| &mut entry.proc)
+        pub fn proc_mut(&mut self, pid: u32) -> Option<ProcGuard<'_>> {
+            self.procs
+                .get_mut(&pid)
+                .map(|entry| ProcGuard { entry })
         }
 
         #[allow(dead_code)]
@@ -358,6 +387,7 @@ pub mod kernel {
                 return Ok(SyscallOutcome::Completed);
             }
 
+            entry.proc.restore_context(&entry.context);
             let ticks = self.timer_ticks();
             let outcome = entry
                 .proc
@@ -368,6 +398,7 @@ pub mod kernel {
             }
 
             self.apply_pending(pid, &mut entry, outcome);
+            entry.context = entry.proc.context();
             self.procs.insert(pid, entry);
             Ok(outcome)
         }
@@ -530,6 +561,7 @@ pub mod kernel {
                     return Ok(ScheduleReason::Blocked);
                 }
 
+                entry.proc.restore_context(&entry.context);
                 let ticks = self.timer_ticks();
                 let outcome = entry
                     .proc
@@ -540,6 +572,7 @@ pub mod kernel {
                 }
 
                 self.apply_pending(pid, &mut entry, outcome);
+                entry.context = entry.proc.context();
                 let reason = match entry.state {
                     ProcState::Exited => Some(ScheduleReason::Exited),
                     ProcState::Blocked => Some(ScheduleReason::Blocked),

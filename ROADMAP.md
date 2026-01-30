@@ -167,6 +167,7 @@ SYS 0x04: yield
 - Implemented: syscall ABI reference (`SYSCALLS.md`) and syscall-level tests.
 - Implemented: code tour reference for Rust concepts (`CODE_TOUR.md`).
 - Implemented: preemption + scheduler hook tests (`tests/scheduler.rs`).
+- Implemented: explicit register `Context` snapshot with save/restore boundary.
 - Remaining: build the CLI ROM to exercise I/O and spawn.
 
 ### Milestone success
@@ -183,7 +184,7 @@ runtime, with preemption support and debugger-friendly surfaces.
 ### Required runtime changes
 
 - Define an explicit `Context` snapshot (PC, SP, I, V regs, DT/ST) and a clear
-  save/restore boundary.
+  save/restore boundary. (Implemented.)
 - Separate scheduler policy from execution: the scheduler decides *when* to run,
   the engine decides *what happens* during a step.
 - Implement preemption via time-sliced stepping (e.g., N instruction steps per

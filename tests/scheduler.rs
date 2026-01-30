@@ -96,10 +96,10 @@ fn preemption_round_robin_interleaves() {
     let pid_b = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
 
     for pid in [pid_a, pid_b] {
-        let proc = kernel.proc_mut(pid).unwrap();
+        let mut proc = kernel.proc_mut(pid).unwrap();
         proc.regs.PC = 0x200;
-        write_opcode(proc, 0x200, 0x7001); // add 1 to V0
-        write_opcode(proc, 0x202, 0x1200); // jump back to 0x200
+        write_opcode(&mut proc, 0x200, 0x7001); // add 1 to V0
+        write_opcode(&mut proc, 0x202, 0x1200); // jump back to 0x200
     }
 
     let out1 = kernel.schedule_once().unwrap();
@@ -150,9 +150,9 @@ fn scheduler_policy_hooks_record_yield() {
 
     let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
     {
-        let proc = kernel.proc_mut(pid).unwrap();
+        let mut proc = kernel.proc_mut(pid).unwrap();
         proc.regs.PC = 0x200;
-        write_opcode(proc, 0x200, 0x0104); // sys_yield
+        write_opcode(&mut proc, 0x200, 0x0104); // sys_yield
     }
 
     let out = kernel.schedule_once().unwrap();

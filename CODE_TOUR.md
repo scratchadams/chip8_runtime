@@ -271,6 +271,9 @@ How it works today:
   it yields, blocks, exits, or is preempted by the time slice.
 - The kernel reports the outcome back to the policy via explicit events
   (`Spawned`, `Unblocked`, `Yielded`, `Preempted`).
+- Each proc carries a saved `Context` snapshot (PC, SP, I, V regs, DT/ST).
+  The kernel restores it before stepping and snapshots it afterward so context
+  boundaries are explicit and inspectable.
 
 Borrowing technique used:
 1. Remove the proc entry from the map.

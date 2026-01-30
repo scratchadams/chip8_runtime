@@ -129,9 +129,11 @@ The host `Kernel` implements `InputDevice` and `FsDevice` so the core can
 eventually target alternative backends without changing opcode semantics.
 Console-mode input is polled continuously and buffered per process, so the CLI
 can accept keystrokes even while it is running (not just while blocked).
-Scheduling is policy-driven with explicit context switch boundaries. A
-time-sliced stepping loop provides preemption while keeping 60Hz timer ticks
-stable, and the policy layer controls which pid runs next.
+Scheduling is policy-driven with explicit context switch boundaries. Each
+process maintains a saved `Context` snapshot (PC, SP, I, V regs, DT/ST). The
+kernel restores it before stepping and snapshots it after each scheduling
+slice. A time-sliced stepping loop provides preemption while keeping 60Hz
+timer ticks stable, and the policy layer controls which pid runs next.
 
 ```
 Kernel
@@ -164,8 +166,8 @@ main()
 The binary expects a root directory and one or more ROM names to run. ROM paths
 are resolved relative to the root and constrained to that directory tree.
 `Kernel::run()` loops on `schedule_once()`, which consults the scheduler policy
-to pick a pid and then runs that proc until it yields, blocks, exits, or is
-preempted by the time slice.
+to pick a pid, restores its saved `Context`, runs it until it yields, blocks,
+exits, or is preempted by the time slice, then snapshots the context again.
 
 ### 4.2 Fetch-Decode-Execute Loop
 

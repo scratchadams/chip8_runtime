@@ -57,16 +57,21 @@ fn write_frame(proc: &mut Proc, base: u16, args: &[u16]) {
     proc.write_bytes(base as u32, &data).unwrap();
 }
 
+fn write_opcode_at_pc(proc: &mut Proc, opcode: u16) {
+    let pc = proc.regs.PC;
+    write_opcode(proc, pc, opcode);
+}
+
 fn set_input_mode(proc: &mut Proc, mode: u16) {
     write_frame(proc, 0x360, &[mode]);
     proc.regs.I = 0x360;
-    write_opcode(proc, proc.regs.PC, 0x0112);
+    write_opcode_at_pc(proc, 0x0112);
 }
 
 fn set_console_mode(proc: &mut Proc, mode: u16) {
     write_frame(proc, 0x370, &[mode]);
     proc.regs.I = 0x370;
-    write_opcode(proc, proc.regs.PC, 0x0113);
+    write_opcode_at_pc(proc, 0x0113);
 }
 
 fn read_dir_entries(proc: &mut Proc, base: u16, count: usize) -> Vec<(String, u8, u32)> {
@@ -96,11 +101,11 @@ fn sys_write_sets_v0_and_vf() {
     let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
 
     {
-        let proc = kernel.proc_mut(pid).unwrap();
+        let mut proc = kernel.proc_mut(pid).unwrap();
         proc.write_bytes(0x320, &[0x00]).unwrap();
-        write_frame(proc, 0x300, &[0x0320, 1]);
+        write_frame(&mut proc, 0x300, &[0x0320, 1]);
         proc.regs.I = 0x300;
-        write_opcode(proc, 0x200, 0x0110);
+        write_opcode(&mut proc, 0x200, 0x0110);
     }
 
     let outcome = kernel.step_proc(pid).unwrap();
@@ -123,7 +128,7 @@ fn sys_dbg_regs_reads_target() {
     let debug_pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
 
     {
-        let target = kernel.proc_mut(target_pid).unwrap();
+        let mut target = kernel.proc_mut(target_pid).unwrap();
         target.regs.PC = 0x234;
         target.regs.SP = 0x345;
         target.regs.I = 0x456;
@@ -134,16 +139,16 @@ fn sys_dbg_regs_reads_target() {
     }
 
     {
-        let debug = kernel.proc_mut(debug_pid).unwrap();
-        write_frame(debug, 0x300, &[target_pid as u16, 0x0340]);
+        let mut debug = kernel.proc_mut(debug_pid).unwrap();
+        write_frame(&mut debug, 0x300, &[target_pid as u16, 0x0340]);
         debug.regs.I = 0x300;
-        write_opcode(debug, debug.regs.PC, 0x0131);
+        write_opcode_at_pc(&mut debug, 0x0131);
     }
 
     let outcome = kernel.step_proc(debug_pid).unwrap();
     assert_eq!(outcome, SyscallOutcome::Completed);
 
-    let debug = kernel.proc_mut(debug_pid).unwrap();
+    let mut debug = kernel.proc_mut(debug_pid).unwrap();
     let data = debug.read_bytes(0x0340, 24).unwrap();
     assert_eq!(read_u16_be(&data, 0), 0x234);
     assert_eq!(read_u16_be(&data, 2), 0x345);
@@ -164,23 +169,23 @@ fn sys_read_copies_input() {
     let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
 
     {
-        let proc = kernel.proc_mut(pid).unwrap();
-        set_input_mode(proc, 1);
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        set_input_mode(&mut proc, 1);
     }
     let _ = kernel.step_proc(pid).unwrap();
 
     {
-        let proc = kernel.proc_mut(pid).unwrap();
-        write_frame(proc, 0x300, &[0x0340, 2]);
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        write_frame(&mut proc, 0x300, &[0x0340, 2]);
         proc.regs.I = 0x300;
-        write_opcode(proc, proc.regs.PC, 0x0111);
+        write_opcode_at_pc(&mut proc, 0x0111);
     }
 
     kernel.push_input(b"ok");
     let outcome = kernel.step_proc(pid).unwrap();
     assert_eq!(outcome, SyscallOutcome::Completed);
 
-    let proc = kernel.proc_mut(pid).unwrap();
+    let mut proc = kernel.proc_mut(pid).unwrap();
     let data = proc.read_bytes(0x340, 2).unwrap();
     assert_eq!(data, b"ok");
     assert_eq!(proc.regs.V[0], 2);
@@ -197,10 +202,10 @@ fn sys_read_line_blocks_until_newline() {
     let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
 
     {
-        let proc = kernel.proc_mut(pid).unwrap();
-        write_frame(proc, 0x300, &[0x0340, 4]);
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        write_frame(&mut proc, 0x300, &[0x0340, 4]);
         proc.regs.I = 0x300;
-        write_opcode(proc, proc.regs.PC, 0x0111);
+        write_opcode_at_pc(&mut proc, 0x0111);
     }
 
     kernel.push_input(b"hi");
@@ -210,7 +215,7 @@ fn sys_read_line_blocks_until_newline() {
 
     kernel.push_input(b"\n");
     assert_eq!(kernel.proc_state(pid), Some(ProcState::Running));
-    let proc = kernel.proc_mut(pid).unwrap();
+    let mut proc = kernel.proc_mut(pid).unwrap();
     let data = proc.read_bytes(0x340, 3).unwrap();
     assert_eq!(data, b"hi\n");
     assert_eq!(proc.regs.V[0], 3);
@@ -227,16 +232,16 @@ fn sys_read_rejects_invalid_buffer() {
     let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
 
     {
-        let proc = kernel.proc_mut(pid).unwrap();
-        set_input_mode(proc, 1);
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        set_input_mode(&mut proc, 1);
     }
     let _ = kernel.step_proc(pid).unwrap();
 
     {
-        let proc = kernel.proc_mut(pid).unwrap();
-        write_frame(proc, 0x300, &[0x2000, 1]);
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        write_frame(&mut proc, 0x300, &[0x2000, 1]);
         proc.regs.I = 0x300;
-        write_opcode(proc, proc.regs.PC, 0x0111);
+        write_opcode_at_pc(&mut proc, 0x0111);
     }
 
     kernel.push_input(b"z");
@@ -257,29 +262,29 @@ fn sys_read_console_uses_console_input() {
     let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
 
     {
-        let proc = kernel.proc_mut(pid).unwrap();
-        set_console_mode(proc, 1);
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        set_console_mode(&mut proc, 1);
     }
     let _ = kernel.step_proc(pid).unwrap();
 
     {
-        let proc = kernel.proc_mut(pid).unwrap();
-        set_input_mode(proc, 1);
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        set_input_mode(&mut proc, 1);
     }
     let _ = kernel.step_proc(pid).unwrap();
 
     {
-        let proc = kernel.proc_mut(pid).unwrap();
-        write_frame(proc, 0x300, &[0x0340, 2]);
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        write_frame(&mut proc, 0x300, &[0x0340, 2]);
         proc.regs.I = 0x300;
-        write_opcode(proc, proc.regs.PC, 0x0111);
+        write_opcode_at_pc(&mut proc, 0x0111);
     }
 
     kernel.push_console_input(pid, b"ok");
     let outcome = kernel.step_proc(pid).unwrap();
     assert_eq!(outcome, SyscallOutcome::Completed);
 
-    let proc = kernel.proc_mut(pid).unwrap();
+    let mut proc = kernel.proc_mut(pid).unwrap();
     let data = proc.read_bytes(0x340, 2).unwrap();
     assert_eq!(data, b"ok");
     assert_eq!(proc.regs.V[0], 2);
@@ -296,17 +301,17 @@ fn sys_write_console_updates_display() {
     let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
 
     {
-        let proc = kernel.proc_mut(pid).unwrap();
-        set_console_mode(proc, 1);
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        set_console_mode(&mut proc, 1);
     }
     let _ = kernel.step_proc(pid).unwrap();
 
     {
-        let proc = kernel.proc_mut(pid).unwrap();
+        let mut proc = kernel.proc_mut(pid).unwrap();
         proc.write_bytes(0x320, b"a").unwrap();
-        write_frame(proc, 0x300, &[0x0320, 1]);
+        write_frame(&mut proc, 0x300, &[0x0320, 1]);
         proc.regs.I = 0x300;
-        write_opcode(proc, proc.regs.PC, 0x0110);
+        write_opcode_at_pc(&mut proc, 0x0110);
     }
 
     let outcome = kernel.step_proc(pid).unwrap();
@@ -328,10 +333,10 @@ fn sys_wait_unblocks_on_exit() {
     let pid_waiter = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
 
     {
-        let proc = kernel.proc_mut(pid_waiter).unwrap();
-        write_frame(proc, 0x300, &[pid_target as u16]);
+        let mut proc = kernel.proc_mut(pid_waiter).unwrap();
+        write_frame(&mut proc, 0x300, &[pid_target as u16]);
         proc.regs.I = 0x300;
-        write_opcode(proc, 0x200, 0x0103);
+        write_opcode(&mut proc, 0x200, 0x0103);
     }
 
     let outcome = kernel.step_proc(pid_waiter).unwrap();
@@ -339,10 +344,10 @@ fn sys_wait_unblocks_on_exit() {
     assert_eq!(kernel.proc_state(pid_waiter), Some(ProcState::Blocked));
 
     {
-        let proc = kernel.proc_mut(pid_target).unwrap();
-        write_frame(proc, 0x320, &[0x002A]);
+        let mut proc = kernel.proc_mut(pid_target).unwrap();
+        write_frame(&mut proc, 0x320, &[0x002A]);
         proc.regs.I = 0x320;
-        write_opcode(proc, 0x200, 0x0102);
+        write_opcode(&mut proc, 0x200, 0x0102);
     }
 
     let _ = kernel.step_proc(pid_target).unwrap();
@@ -366,11 +371,11 @@ fn sys_spawn_creates_process() {
     let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
 
     {
-        let proc = kernel.proc_mut(pid).unwrap();
+        let mut proc = kernel.proc_mut(pid).unwrap();
         proc.write_bytes(0x340, b"child.ch8").unwrap();
-        write_frame(proc, 0x300, &[0x0340, 9, 1]);
+        write_frame(&mut proc, 0x300, &[0x0340, 9, 1]);
         proc.regs.I = 0x300;
-        write_opcode(proc, 0x200, 0x0101);
+        write_opcode(&mut proc, 0x200, 0x0101);
     }
 
     let outcome = kernel.step_proc(pid).unwrap();
@@ -395,19 +400,19 @@ fn sys_fs_list_reads_root_entries() {
     let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
 
     {
-        let proc = kernel.proc_mut(pid).unwrap();
-        write_frame(proc, 0x300, &[0x0000, 0, 0x0400, 10]);
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        write_frame(&mut proc, 0x300, &[0x0000, 0, 0x0400, 10]);
         proc.regs.I = 0x300;
-        write_opcode(proc, proc.regs.PC, 0x0120);
+        write_opcode_at_pc(&mut proc, 0x0120);
     }
 
     let outcome = kernel.step_proc(pid).unwrap();
     assert_eq!(outcome, SyscallOutcome::Completed);
 
-    let proc = kernel.proc_mut(pid).unwrap();
+    let mut proc = kernel.proc_mut(pid).unwrap();
     assert_eq!(proc.regs.V[0xF], 0);
     let count = proc.regs.V[0] as usize;
-    let entries = read_dir_entries(proc, 0x0400, count);
+    let entries = read_dir_entries(&mut proc, 0x0400, count);
     assert!(entries.iter().any(|(n, k, _)| n == "a.ch8" && *k == 0));
     assert!(entries.iter().any(|(n, k, _)| n == "subdir" && *k == 1));
 
@@ -424,11 +429,11 @@ fn sys_fs_open_read_close_roundtrip() {
     let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
 
     {
-        let proc = kernel.proc_mut(pid).unwrap();
+        let mut proc = kernel.proc_mut(pid).unwrap();
         proc.write_bytes(0x340, b"hello.txt").unwrap();
-        write_frame(proc, 0x300, &[0x0340, 9, 0]);
+        write_frame(&mut proc, 0x300, &[0x0340, 9, 0]);
         proc.regs.I = 0x300;
-        write_opcode(proc, proc.regs.PC, 0x0121);
+        write_opcode_at_pc(&mut proc, 0x0121);
     }
 
     let outcome = kernel.step_proc(pid).unwrap();
@@ -437,24 +442,26 @@ fn sys_fs_open_read_close_roundtrip() {
     assert_ne!(fd, 0);
 
     {
-        let proc = kernel.proc_mut(pid).unwrap();
-        write_frame(proc, 0x320, &[fd as u16, 0x0500, 5]);
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        write_frame(&mut proc, 0x320, &[fd as u16, 0x0500, 5]);
         proc.regs.I = 0x320;
-        write_opcode(proc, proc.regs.PC, 0x0122);
+        write_opcode_at_pc(&mut proc, 0x0122);
     }
 
     let outcome = kernel.step_proc(pid).unwrap();
     assert_eq!(outcome, SyscallOutcome::Completed);
-    let proc = kernel.proc_mut(pid).unwrap();
-    let data = proc.read_bytes(0x0500, 5).unwrap();
-    assert_eq!(data, b"hello");
-    assert_eq!(proc.regs.V[0], 5);
+    {
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        let data = proc.read_bytes(0x0500, 5).unwrap();
+        assert_eq!(data, b"hello");
+        assert_eq!(proc.regs.V[0], 5);
+    }
 
     {
-        let proc = kernel.proc_mut(pid).unwrap();
-        write_frame(proc, 0x340, &[fd as u16]);
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        write_frame(&mut proc, 0x340, &[fd as u16]);
         proc.regs.I = 0x340;
-        write_opcode(proc, proc.regs.PC, 0x0123);
+        write_opcode_at_pc(&mut proc, 0x0123);
     }
     let outcome = kernel.step_proc(pid).unwrap();
     assert_eq!(outcome, SyscallOutcome::Completed);
