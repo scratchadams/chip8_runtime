@@ -71,4 +71,37 @@ pub mod device {
         fn read(&mut self, pid: u32, fd: u8, len: usize) -> Result<Vec<u8>, FsError>;
         fn close(&mut self, pid: u32, fd: u8) -> Result<(), FsError>;
     }
+
+    #[derive(Copy, Clone, Debug, PartialEq, Eq)]
+    pub enum AllocError {
+        InvalidInput,
+        OutOfMemory,
+        Other,
+    }
+
+    /// Memory allocator abstraction for page-based memory management.
+    ///
+    /// Enables different allocation strategies:
+    /// - SharedMemory: Dynamic allocation from heap (std targets)
+    /// - FixedArena: Static allocation from fixed-size array (no_std embedded)
+    /// - QEMU: Direct physical memory access
+    ///
+    /// Page size is fixed at 0x1000 (4KB) per CHIP-8 convention.
+    pub trait MemoryAllocator {
+        /// Allocate `pages` contiguous virtual pages, returning physical page bases.
+        /// Pages form a contiguous virtual range but may map to non-contiguous physical.
+        fn mmap(&mut self, pages: u16) -> Result<Vec<u32>, AllocError>;
+
+        /// Free previously allocated pages (future: enables resource reclamation).
+        fn munmap(&mut self, _page_table: &[u32]) -> Result<(), AllocError> {
+            // Default implementation: no-op (for allocators that don't support freeing)
+            Ok(())
+        }
+
+        /// Write data to physical memory at the given address.
+        fn write(&mut self, addr: usize, data: &[u8]) -> Result<(), AllocError>;
+
+        /// Read data from physical memory at the given address.
+        fn read(&mut self, addr: usize, len: usize) -> Result<Vec<u8>, AllocError>;
+    }
 }

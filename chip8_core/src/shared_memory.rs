@@ -1,4 +1,6 @@
 pub mod shared_memory {
+    use crate::device::device::{MemoryAllocator, AllocError};
+
     #[cfg(feature = "std")]
     use std::io::{Error, ErrorKind};
 
@@ -136,6 +138,26 @@ pub mod shared_memory {
             data.extend_from_slice(&self.phys_mem[addr..end]);
 
             Ok(data)
+        }
+    }
+
+    /// Implement MemoryAllocator trait for SharedMemory.
+    /// This allows SharedMemory to be used polymorphically with other allocators.
+    impl MemoryAllocator for SharedMemory {
+        fn mmap(&mut self, pages: u16) -> Result<Vec<u32>, AllocError> {
+            // Delegate to existing mmap implementation, converting error types
+            SharedMemory::mmap(self, pages).map_err(|_| AllocError::OutOfMemory)
+        }
+
+        fn write(&mut self, addr: usize, data: &[u8]) -> Result<(), AllocError> {
+            // Convert slice to Vec for existing write signature
+            let data_vec = data.to_vec();
+            SharedMemory::write(self, addr, &data_vec, data.len())
+                .map_err(|_| AllocError::Other)
+        }
+
+        fn read(&mut self, addr: usize, len: usize) -> Result<Vec<u8>, AllocError> {
+            SharedMemory::read(self, addr, len).map_err(|_| AllocError::Other)
         }
     }
 }
