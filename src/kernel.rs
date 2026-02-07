@@ -434,8 +434,8 @@ pub mod kernel {
             self.trace_record(TRACE_KIND_SCHED, event, pid, 0, 0);
         }
 
-        fn trace_syscall(&mut self, pid: u32, id: u16, outcome: u8) {
-            self.trace_record(TRACE_KIND_SYSCALL, outcome, pid, id, 0);
+        fn trace_syscall(&mut self, pid: u32, id: u16, outcome: u8, error_code: u8) {
+            self.trace_record(TRACE_KIND_SYSCALL, outcome, pid, id, error_code as u16);
         }
 
         /// replace the scheduling policy and seed it with all runnable pids.
@@ -779,7 +779,7 @@ pub mod kernel {
                 .handler(id);
             let Some(handler) = handler else {
                 if id != SYS_DBG_TRACE_READ {
-                    self.trace_syscall(pid, id, TRACE_SYSCALL_ERROR);
+                    self.trace_syscall(pid, id, TRACE_SYSCALL_ERROR, ERR_INVALID);
                 }
                 return Err(Error::new(ErrorKind::NotFound, "unknown syscall id"));
             };
@@ -790,7 +790,9 @@ pub mod kernel {
                 SyscallOutcome::Blocked => TRACE_SYSCALL_BLOCKED,
             };
             if id != SYS_DBG_TRACE_READ {
-                self.trace_syscall(pid, id, trace_outcome);
+                // Record error code from V[0] if VF=1 (error), otherwise 0 (success)
+                let error_code = if proc.regs.V[0xF] == 1 { proc.regs.V[0] } else { 0 };
+                self.trace_syscall(pid, id, trace_outcome, error_code);
             }
             Ok(outcome)
         }
