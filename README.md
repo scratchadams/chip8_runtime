@@ -41,7 +41,7 @@ With the foundation solid, AI assistance (Claude Sonnet 4.5, GitHub Copilot) was
 - **Codex**: Architecture design, implementation, testing, documentation
 
 ### Principles
-AI assistance on this project adheres to these core values (extracted from [agents.md](agents.md)):
+AI assistance on this project adheres to these core values (extracted from [AGENTS.md](AGENTS.md)):
 
 1. **Understand before changing** - AI must read existing code, understand patterns, and match the established style
 2. **Clarity over cleverness** - Simple, obvious code wins; no premature abstraction or over-engineering
@@ -221,11 +221,11 @@ SP -= 2
 ### Core Documentation
 - **[EXTENSION.md](EXTENSION.md)**: Complete syscall reference, ABI specification, error codes
 - **[SYSCALLS.md](SYSCALLS.md)**: Syscall catalog with signatures and examples
-- **[architecture.md](architecture.md)**: System architecture, virtual memory, scheduling
-- **[code_tour.md](code_tour.md)**: Guided tour of the codebase for new contributors
+- **[ARCHITECTURE.md](ARCHITECTURE.md)**: System architecture, virtual memory, scheduling
+- **[CODE_TOUR.md](CODE_TOUR.md)**: Guided tour of the codebase for new contributors
 
 ### Development Guides
-- **[agents.md](agents.md)**: Development philosophy and AI collaboration principles
+- **[AGENTS.md](AGENTS.md)**: Development philosophy and AI collaboration principles
 - **[QEMU_INTEGRATION.md](QEMU_INTEGRATION.md)**: Porting to bare-metal and QEMU targets
 - **[SYSCALL_ERROR_LOGGING.md](SYSCALL_ERROR_LOGGING.md)**: JSON error logging format and usage
 - **[TRACE_FORMAT_CHANGES.md](TRACE_FORMAT_CHANGES.md)**: Trace record format and debugger integration
@@ -324,7 +324,7 @@ chip8_runtime/
 
 ## Design Philosophy
 
-### From agents.md
+### From AGENTS.md
 
 **Understand before changing**
 > "Read the existing code first. Understand the patterns, the style, the architecture. Match what's already there. Don't impose your own style on someone else's codebase."
@@ -405,7 +405,7 @@ cargo build -p chip8_core --no-default-features
 ## Contributing
 
 Contributions welcome! Please:
-1. Read [agents.md](agents.md) for development philosophy
+1. Read [AGENTS.md](AGENTS.md) for development philosophy
 2. Follow the established code style (clarity over cleverness)
 3. Add tests for new features (integration tests in `tests/`)
 4. Update documentation (in-code comments + markdown docs)
