@@ -52,6 +52,7 @@ pub mod kernel {
     const DBG_REGS_SIZE: usize = 24;
     const DEFAULT_TIMESLICE_STEPS: u32 = 200;
     const DEBUG_INPUT_ENV: &str = "CHIP8_DEBUG_INPUT";
+    const SYSCALL_ERROR_LOG_ENV: &str = "CHIP8_SYSCALL_ERRORS";
     const TRACE_RECORD_SIZE: usize = 8;
     const TRACE_DEFAULT_CAPACITY: usize = 1024;
 
@@ -69,6 +70,69 @@ pub mod kernel {
     const TRACE_SYSCALL_YIELDED: u8 = 0x02;
     const TRACE_SYSCALL_BLOCKED: u8 = 0x03;
     const TRACE_SYSCALL_ERROR: u8 = 0x04;
+
+    /// Get human-readable syscall name from ID
+    fn syscall_name(id: u16) -> &'static str {
+        match id {
+            SYS_SPAWN => "sys_spawn",
+            SYS_EXIT => "sys_exit",
+            SYS_WAIT => "sys_wait",
+            SYS_YIELD => "sys_yield",
+            SYS_WRITE => "sys_write",
+            SYS_READ => "sys_read",
+            SYS_INPUT_MODE => "sys_input_mode",
+            SYS_CONSOLE_MODE => "sys_console_mode",
+            SYS_FS_LIST => "sys_fs_list",
+            SYS_FS_OPEN => "sys_fs_open",
+            SYS_FS_READ => "sys_fs_read",
+            SYS_FS_CLOSE => "sys_fs_close",
+            SYS_DBG_LIST => "sys_dbg_list",
+            SYS_DBG_REGS => "sys_dbg_regs",
+            SYS_DBG_MEM_READ => "sys_dbg_mem_read",
+            SYS_DBG_MEM_WRITE => "sys_dbg_mem_write",
+            SYS_DBG_TRACE_READ => "sys_dbg_trace_read",
+            _ => "unknown",
+        }
+    }
+
+    /// Get human-readable error name from code
+    fn error_name(code: u8) -> &'static str {
+        match code {
+            ERR_INVALID => "ERR_INVALID",
+            ERR_IO => "ERR_IO",
+            ERR_NOT_FOUND => "ERR_NOT_FOUND",
+            ERR_NOT_DIR => "ERR_NOT_DIR",
+            ERR_IS_DIR => "ERR_IS_DIR",
+            ERR_NAME_TOO_LONG => "ERR_NAME_TOO_LONG",
+            ERR_TOO_MANY_OPEN => "ERR_TOO_MANY_OPEN",
+            ERR_PATH => "ERR_PATH",
+            0x0A => "ERR_STACK",
+            _ => "ERR_UNKNOWN",
+        }
+    }
+
+    /// Log syscall error in JSON format to stderr (gated by CHIP8_SYSCALL_ERRORS env var)
+    fn log_syscall_error(pid: u32, syscall_id: u16, error_code: u8, message: &str) {
+        if std::env::var(SYSCALL_ERROR_LOG_ENV).is_err() {
+            return;
+        }
+
+        let timestamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_millis();
+
+        eprintln!(
+            "{{\"level\":\"error\",\"timestamp\":{},\"event\":\"syscall_error\",\"pid\":{},\"syscall_id\":\"0x{:04X}\",\"syscall_name\":\"{}\",\"error_code\":\"0x{:02X}\",\"error_name\":\"{}\",\"message\":\"{}\"}}",
+            timestamp,
+            pid,
+            syscall_id,
+            syscall_name(syscall_id),
+            error_code,
+            error_name(error_code),
+            message
+        );
+    }
 
     pub type SyscallHandler =
         Arc<dyn Fn(&mut Kernel, u32, &mut Proc) -> SyscallOutcome + Send + Sync>;
@@ -1205,10 +1269,11 @@ pub mod kernel {
         }
     }
 
-    fn sys_spawn(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+    fn sys_spawn(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
         let name_ptr = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_SPAWN, ERR_INVALID, "syscall frame too small for name_ptr");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1217,6 +1282,7 @@ pub mod kernel {
         let name_len = match Kernel::syscall_arg(proc, 1) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_SPAWN, ERR_INVALID, "syscall frame too small for name_len");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1226,6 +1292,7 @@ pub mod kernel {
         let name_bytes = match proc.read_bytes(name_ptr as u32, name_len as usize) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_SPAWN, ERR_INVALID, "name buffer read failed");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1235,6 +1302,7 @@ pub mod kernel {
         let path = match kernel.resolve_rom_path(&rom_name) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_SPAWN, ERR_IO, "ROM path resolution failed");
                 proc.regs.V[0] = ERR_IO;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1243,6 +1311,7 @@ pub mod kernel {
         let display = match DisplayWindow::from_env() {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_SPAWN, ERR_IO, "display initialization failed");
                 proc.regs.V[0] = ERR_IO;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1254,6 +1323,7 @@ pub mod kernel {
                 proc.regs.V[0xF] = 0;
             }
             Err(_) => {
+                log_syscall_error(pid, SYS_SPAWN, ERR_IO, "process spawn failed");
                 proc.regs.V[0] = ERR_IO;
                 proc.regs.V[0xF] = 1;
             }
@@ -1272,6 +1342,7 @@ pub mod kernel {
         let target = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val as u32,
             Err(_) => {
+                log_syscall_error(pid, SYS_WAIT, ERR_INVALID, "syscall frame too small for target pid");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1279,6 +1350,7 @@ pub mod kernel {
         };
 
         let Some(target_entry) = kernel.procs.get(&target) else {
+            log_syscall_error(pid, SYS_WAIT, ERR_INVALID, "target pid not found");
             proc.regs.V[0] = ERR_INVALID;
             proc.regs.V[0xF] = 1;
             return SyscallOutcome::Completed;
@@ -1301,10 +1373,11 @@ pub mod kernel {
         SyscallOutcome::Yielded
     }
 
-    fn sys_write(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+    fn sys_write(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
         let buf = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_WRITE, ERR_INVALID, "syscall frame too small for buf");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1313,6 +1386,7 @@ pub mod kernel {
         let len = match Kernel::syscall_arg(proc, 1) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_WRITE, ERR_INVALID, "syscall frame too small for len");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1322,6 +1396,7 @@ pub mod kernel {
         let data = match proc.read_bytes(buf as u32, len as usize) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_WRITE, ERR_INVALID, "buffer read failed (out of bounds)");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1342,6 +1417,7 @@ pub mod kernel {
                 proc.regs.V[0xF] = 0;
             }
             Err(_) => {
+                log_syscall_error(pid, SYS_WRITE, ERR_IO, "host output write failed");
                 proc.regs.V[0] = ERR_IO;
                 proc.regs.V[0xF] = 1;
             }
@@ -1353,6 +1429,7 @@ pub mod kernel {
         let buf = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_READ, ERR_INVALID, "syscall frame too small for buf");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1361,6 +1438,7 @@ pub mod kernel {
         let len = match Kernel::syscall_arg(proc, 1) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_READ, ERR_INVALID, "syscall frame too small for len");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1381,6 +1459,7 @@ pub mod kernel {
                     let count = (len as usize).min(newline_idx + 1);
                     let data = Kernel::pop_input(&mut proc.console_input, count);
                     if proc.write_bytes(buf as u32, &data).is_err() {
+                        log_syscall_error(pid, SYS_READ, ERR_INVALID, "buffer write failed (out of bounds)");
                         proc.regs.V[0] = ERR_INVALID;
                         proc.regs.V[0xF] = 1;
                     } else {
@@ -1409,6 +1488,7 @@ pub mod kernel {
                 let count = (len as usize).min(newline_idx + 1);
                 let data = Kernel::pop_input(&mut kernel.input, count);
                 if proc.write_bytes(buf as u32, &data).is_err() {
+                    log_syscall_error(pid, SYS_READ, ERR_INVALID, "buffer write failed (out of bounds)");
                     proc.regs.V[0] = ERR_INVALID;
                     proc.regs.V[0xF] = 1;
                 } else {
@@ -1428,6 +1508,7 @@ pub mod kernel {
                     let count = (len as usize).min(proc.console_input.len());
                     let data = Kernel::pop_input(&mut proc.console_input, count);
                     if proc.write_bytes(buf as u32, &data).is_err() {
+                        log_syscall_error(pid, SYS_READ, ERR_INVALID, "buffer write failed (out of bounds)");
                         proc.regs.V[0] = ERR_INVALID;
                         proc.regs.V[0xF] = 1;
                     } else {
@@ -1456,6 +1537,7 @@ pub mod kernel {
                 let count = (len as usize).min(kernel.input.len());
                 let data = Kernel::pop_input(&mut kernel.input, count);
                 if proc.write_bytes(buf as u32, &data).is_err() {
+                    log_syscall_error(pid, SYS_READ, ERR_INVALID, "buffer write failed (out of bounds)");
                     proc.regs.V[0] = ERR_INVALID;
                     proc.regs.V[0xF] = 1;
                 } else {
@@ -1467,16 +1549,18 @@ pub mod kernel {
         }
     }
 
-    fn sys_input_mode(_kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+    fn sys_input_mode(_kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
         let mode = match Kernel::syscall_arg(proc, 0) {
             Ok(0) => InputMode::Line,
             Ok(1) => InputMode::Byte,
             Ok(_) => {
+                log_syscall_error(pid, SYS_INPUT_MODE, ERR_INVALID, "invalid mode value (must be 0 or 1)");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
             }
             Err(_) => {
+                log_syscall_error(pid, SYS_INPUT_MODE, ERR_INVALID, "syscall frame too small for mode");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1488,16 +1572,18 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_console_mode(_kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+    fn sys_console_mode(_kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
         let mode = match Kernel::syscall_arg(proc, 0) {
             Ok(0) => ConsoleMode::Host,
             Ok(1) => ConsoleMode::Display,
             Ok(_) => {
+                log_syscall_error(pid, SYS_CONSOLE_MODE, ERR_INVALID, "invalid mode value (must be 0 or 1)");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
             }
             Err(_) => {
+                log_syscall_error(pid, SYS_CONSOLE_MODE, ERR_INVALID, "syscall frame too small for mode");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
