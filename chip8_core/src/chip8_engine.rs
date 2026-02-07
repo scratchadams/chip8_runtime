@@ -62,6 +62,17 @@ pub mod chip8_engine {
                 SyscallOutcome::Completed
             },
             0x00ee => {
+                // Check stack underflow before modifying SP.
+                // Stack grows downward: RET increments SP by 2.
+                let new_sp = proc.regs.SP.wrapping_add(2);
+                if new_sp > proc.vm_size as u16 {
+                    // Stack underflow: set error flag and code, don't modify state.
+                    proc.regs.V[0xF] = 1;
+                    proc.regs.V[0] = 0x0A;  // Error code: stack underflow
+                    proc.regs.PC += 2;
+                    return SyscallOutcome::Completed;
+                }
+
                 // stack grows downward; SP points to top of stack.
                 let val1 = proc.read_u8(proc.regs.SP as u32).unwrap() as u16;
                 let val1 = val1 << 8;
@@ -69,7 +80,7 @@ pub mod chip8_engine {
                 let val2 = proc.read_u8((proc.regs.SP + 1) as u32).unwrap() as u16;
 
                 proc.regs.PC = val1 | val2;
-                proc.regs.SP = proc.regs.SP.wrapping_add(2);
+                proc.regs.SP = new_sp;
                 SyscallOutcome::Completed
             },
             _ => {
@@ -108,14 +119,26 @@ pub mod chip8_engine {
     }
 
     // stack uses virtual addresses; translation handles paging.
+    // Stack grows downward from vm_size with bounds enforcement.
     pub fn opcode_0x2<D: DisplayDevice>(proc: &mut Proc<D>, instruction: u16) {
+        // Check stack overflow before modifying SP.
+        // Stack grows downward: CALL decrements SP by 2.
+        let new_sp = proc.regs.SP.wrapping_sub(2);
+        if new_sp < proc.stack_limit {
+            // Stack overflow: set error flag and code, don't modify state.
+            proc.regs.V[0xF] = 1;
+            proc.regs.V[0] = 0x0A;  // Error code: stack overflow
+            proc.regs.PC += 2;
+            return;
+        }
+
         // return address is stored as two bytes (hi/lo).
         let mut data: Vec<u8> = Vec::new();
         data.push(((proc.regs.PC + 2) >> 8) as u8);
         data.push((proc.regs.PC + 2) as u8);
-        
+
         // write via virtual addresses to respect paging.
-        proc.regs.SP = proc.regs.SP.wrapping_sub(2);
+        proc.regs.SP = new_sp;
         proc.write_u8(proc.regs.SP as u32, data[0]).unwrap();
         proc.write_u8((proc.regs.SP + 1) as u32, data[1]).unwrap();
 
@@ -171,6 +194,16 @@ pub mod chip8_engine {
         proc.regs.PC += 0x2;
     }
 
+    /// Arithmetic and bitwise operations (0x8XYZ family).
+    ///
+    /// Implements Columbia spec semantics for shift operations:
+    /// - 8XY6 (shift right): shifts VX (not VY), stores LSB in VF before shift
+    /// - 8XYE (shift left): shifts VX (not VY), stores MSB in VF before shift
+    ///
+    /// Borrow/carry flags (VF) are set according to original CHIP-8 behavior:
+    /// - 8XY4 (ADD): VF=1 if overflow, VF=0 otherwise
+    /// - 8XY5 (SUB): VF=1 if VX >= VY (no borrow), VF=0 if borrow
+    /// - 8XY7 (SUBN): VF=1 if VY >= VX (no borrow), VF=0 if borrow
     pub fn opcode_0x8<D: DisplayDevice>(proc: &mut Proc<D>, instruction: u16) {
         let var_z = extract_z!(instruction);
         let var_x = extract_x!(instruction) as usize;
@@ -322,6 +355,15 @@ pub mod chip8_engine {
         }
     }
 
+    /// Timer, memory, and I/O operations (0xFXYY family).
+    ///
+    /// Key behaviors:
+    /// - FX0A (wait for key): blocks execution until key pressed, enables event-driven input
+    /// - FX55/FX65 (store/load registers): post-increment I register (differs from some CHIP-8 variants)
+    /// - FX29 (sprite address): sprites are 5 bytes each starting at address 0x0
+    /// - FX33 (BCD): stores decimal representation at I, I+1, I+2
+    ///
+    /// Returns SyscallOutcome::Blocked for FX0A if no key pressed (scheduler handles blocking).
     pub fn opcode_0xF<D: DisplayDevice>(proc: &mut Proc<D>, instruction: u16) -> SyscallOutcome {
         let var_x = extract_x!(instruction);
         let var_kk = extract_kk!(instruction);

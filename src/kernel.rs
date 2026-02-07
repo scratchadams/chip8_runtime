@@ -494,6 +494,17 @@ pub mod kernel {
         }
 
         /// schedule a single runnable pid using the current policy.
+        /// Run one scheduling cycle: select next runnable process and execute it.
+        ///
+        /// Scheduler state machine:
+        /// 1. Poll for console input (may unblock waiting processes)
+        /// 2. Select next runnable process (policy-driven: round-robin, priority, etc.)
+        /// 3. Execute process until it yields, blocks, preempts, or exits
+        /// 4. Update scheduler state and trace the transition
+        /// 5. Return outcome (Ran or Idle)
+        ///
+        /// Preemption occurs when timeslice is exhausted. Blocking occurs on I/O waits.
+        /// Yielding is cooperative (sys_yield). Exiting is terminal (sys_exit).
         pub fn schedule_once(&mut self) -> Result<ScheduleOutcome, Error> {
             self.poll_console_input();
             let Some(pid) = self.next_runnable_pid() else {

@@ -568,3 +568,62 @@ fn sys_fs_open_read_close_roundtrip() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+// Negative tests for edge cases
+
+#[test]
+fn sys_spawn_rejects_frame_too_small() {
+    set_headless();
+    let root = temp_root("malformed_frame_length");
+    let mut kernel = make_kernel(&root);
+    let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
+
+    {
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        // Write frame with length too small to contain required args.
+        // sys_spawn needs 3 args (name_ptr, name_len, pages) = 1 + 3*2 = 7 bytes minimum
+        proc.regs.I = 0x300;
+        proc.write_u8(0x300, 3).unwrap();  // Length 3, but needs at least 7
+        write_opcode_at_pc(&mut proc, 0x0101);  // sys_spawn
+    }
+
+    let outcome = kernel.step_proc(pid).unwrap();
+    assert_eq!(outcome, SyscallOutcome::Completed);
+
+    {
+        let proc = kernel.proc(pid).unwrap();
+        // Should fail with invalid argument error (frame too small)
+        assert_eq!(proc.regs.V[0xF], 1, "VF should be 1 (error)");
+        assert_eq!(proc.regs.V[0], 0x02, "V0 should be 0x02 (invalid argument)");
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn sys_write_rejects_buffer_outside_memory() {
+    set_headless();
+    let root = temp_root("invalid_buffer_address");
+    let mut kernel = make_kernel(&root);
+    let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
+
+    {
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        // Write frame pointing to address beyond vm_size (4096 for 1-page proc)
+        write_frame(&mut proc, 0x300, &[0xF000, 100]);  // Address 0xF000 is out of bounds
+        proc.regs.I = 0x300;
+        write_opcode_at_pc(&mut proc, 0x0110);  // sys_write
+    }
+
+    let outcome = kernel.step_proc(pid).unwrap();
+    assert_eq!(outcome, SyscallOutcome::Completed);
+
+    {
+        let proc = kernel.proc(pid).unwrap();
+        // Should fail with invalid argument error
+        assert_eq!(proc.regs.V[0xF], 1, "VF should be 1 (error)");
+        assert_eq!(proc.regs.V[0], 0x02, "V0 should be 0x02 (invalid argument)");
+    }
+
+    let _ = fs::remove_dir_all(root);
+}

@@ -237,7 +237,7 @@ address is translated to physical by:
 2. **Proc structure**
    - Implemented: `page_table` and `vm_size`.
    - Implemented: SP initializes at the top of virtual memory.
-   - Still needed: explicit stack bounds enforcement (`stack_bottom`, `stack_top`).
+   - Implemented: `stack_limit` field enforces lower stack bound (vm_size - 128).
 
 3. **Memory access helpers**
    - Implemented: `translate()` plus `read_u8`/`write_u8` helpers.
@@ -245,8 +245,10 @@ address is translated to physical by:
    - Still needed: unify error reporting for syscall-visible failures.
 
 4. **Stack bounds enforcement**
-   - Still needed: enforce `stack_limit` and `stack_top` on call/return and
-     on any future stack syscalls. Return VF=1 on overflow/underflow.
+   - Implemented: `stack_limit` field enforces lower bound (128 bytes reserved = 64 call levels).
+   - Implemented: CALL (0x2nnn) checks `SP - 2 >= stack_limit` before push.
+   - Implemented: RET (0x00ee) checks `SP + 2 <= vm_size` before pop.
+   - Returns VF=1, V0=0x0A on overflow/underflow without modifying SP or PC.
 
 5. **Syscall dispatcher**
    - Implemented: opcode routing for `0nnn` (0x0100..0x01FF) and a syscall table.

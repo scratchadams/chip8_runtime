@@ -61,6 +61,7 @@ Error codes currently in use:
 0x07 = name too long
 0x08 = too many open files
 0x09 = invalid path
+0x0A = stack overflow/underflow
 ```
 
 ---

@@ -429,3 +429,53 @@ fn virtual_translation_spans_pages() {
     assert_eq!(proc.read_u8(0x0FFF).unwrap(), 0xAA);
     assert_eq!(proc.read_u8(0x1000).unwrap(), 0x55);
 }
+
+// Stack bounds enforcement tests
+
+#[test]
+fn opcode_2nnn_detects_stack_overflow() {
+    let mut proc = new_headless_proc();
+    // Stack limit is vm_size - 128 (4096 - 128 = 3968)
+    // SP starts at vm_size (4096)
+    // Each CALL decrements SP by 2, so we need 65 calls to overflow
+
+    // Execute 64 successful CALLs (should succeed)
+    for i in 0..64 {
+        proc.regs.V[0xF] = 0;  // Clear error flag
+        exec_opcode(&mut proc, 0x2400);  // CALL 0x400
+        assert_eq!(proc.regs.V[0xF], 0, "Call {} should succeed", i);
+    }
+
+    // 65th CALL should trigger overflow
+    proc.regs.V[0xF] = 0;
+    proc.regs.V[0] = 0;
+    let pc_before = proc.regs.PC;
+    let sp_before = proc.regs.SP;
+
+    exec_opcode(&mut proc, 0x2400);  // CALL 0x400
+
+    // Should set error flag and code, not modify SP
+    assert_eq!(proc.regs.V[0xF], 1, "VF should be 1 (error)");
+    assert_eq!(proc.regs.V[0], 0x0A, "V0 should be 0x0A (stack overflow)");
+    assert_eq!(proc.regs.SP, sp_before, "SP should not be modified on overflow");
+    assert_eq!(proc.regs.PC, pc_before + 2, "PC should advance past opcode");
+}
+
+#[test]
+fn opcode_00ee_detects_stack_underflow() {
+    let mut proc = new_headless_proc();
+    // SP starts at vm_size (4096). RET without matching CALL should underflow.
+
+    proc.regs.V[0xF] = 0;
+    proc.regs.V[0] = 0;
+    let pc_before = proc.regs.PC;
+    let sp_before = proc.regs.SP;
+
+    exec_opcode(&mut proc, 0x00EE);  // RET
+
+    // Should set error flag and code, not modify SP or PC (except advancement)
+    assert_eq!(proc.regs.V[0xF], 1, "VF should be 1 (error)");
+    assert_eq!(proc.regs.V[0], 0x0A, "V0 should be 0x0A (stack underflow)");
+    assert_eq!(proc.regs.SP, sp_before, "SP should not be modified on underflow");
+    assert_eq!(proc.regs.PC, pc_before + 2, "PC should advance past opcode");
+}

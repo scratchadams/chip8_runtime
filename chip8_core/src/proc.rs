@@ -111,6 +111,7 @@ pub mod proc {
         pub display: D,
         pub page_table: Vec<u32>,
         pub vm_size: u32,
+        pub stack_limit: u16,  // Lowest address stack can reach (stack grows downward)
         pub input_mode: InputMode,
         pub console_mode: ConsoleMode,
         pub console_input: VecDeque<u8>,
@@ -130,12 +131,15 @@ pub mod proc {
             let vm_size = pages as u32 * shared_memory::shared_memory::PAGE_SIZE as u32;
             let mut regs = Registers::default();
             regs.SP = vm_size.min(u16::MAX as u32) as u16;
+            // Reserve 128 bytes for stack (64 call levels). Stack grows downward from vm_size.
+            let stack_limit = (vm_size.saturating_sub(128)).min(u16::MAX as u32) as u16;
             Ok(Proc {
                 regs: regs,
                 mem: mem,
                 display: display,
                 page_table: page_table,
                 vm_size: vm_size,
+                stack_limit: stack_limit,
                 input_mode: InputMode::Line,
                 console_mode: ConsoleMode::Host,
                 console_input: VecDeque::new(),
@@ -152,7 +156,15 @@ pub mod proc {
             self.regs.restore(ctx);
         }
 
-        // translate a virtual address into a physical address.
+        /// Translate virtual address to physical using single-level page table.
+        ///
+        /// Each process has isolated virtual memory mapped through a page table.
+        /// Virtual addresses are split into: (page_index, offset_within_page).
+        /// The page_table maps page_index → physical_base, then we add offset.
+        ///
+        /// This enables: (1) memory isolation between processes, (2) efficient
+        /// allocation without contiguous physical memory, (3) future support for
+        /// copy-on-write and shared pages.
         pub fn translate(&self, vaddr: u32) -> Result<usize, Error> {
             if vaddr >= self.vm_size {
                 return Err(Error::new(std::io::ErrorKind::Other, "virtual address out of range"));
@@ -224,7 +236,7 @@ pub mod proc {
         pub fn load_program_bytes(&mut self, program: &[u8]) -> Result<(), Error> {
             let max_size = self.vm_size as usize - 0x200;
             if program.len() > max_size {
-                return Err(Error::new(std::io::ErrorKind::FileTooLarge, "File too large"));
+                return Err(Error::new(std::io::ErrorKind::InvalidInput, "File too large"));
             }
 
             //copy sprites into process memory
