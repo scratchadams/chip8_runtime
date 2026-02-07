@@ -116,11 +116,9 @@ pub mod shared_memory {
             }
 
             if allocated.len() < needed {
-                // Allocation failed, rollback
-                for &page_base in &allocated {
-                    let idx = (page_base as usize) / PAGE_SIZE;
-                    self.phys_bitmap[idx] = false;
-                }
+                // Allocation failed, rollback both bitmap AND free_list
+                // Use munmap to restore allocator state (handles both bitmap and free_list)
+                let _ = self.munmap(&allocated); // Best-effort cleanup, ignore errors
                 return Err(Error::new(ErrorKind::OutOfMemory, "insufficient free pages"));
             }
 
@@ -129,6 +127,10 @@ pub mod shared_memory {
 
         /// Free pages back to the allocator, coalescing adjacent free regions.
         /// First-fit strategy: maintains free_list sorted by base index.
+        ///
+        /// Atomicity: Validates ALL indices before mutating state to ensure
+        /// partial failures don't corrupt allocator invariants.
+        /// Double-free protection: Deduplicates indices to prevent overlapping free ranges.
         pub fn munmap(&mut self, page_table: &[u32]) -> Result<(), Error> {
             if page_table.is_empty() {
                 return Ok(());
@@ -141,11 +143,18 @@ pub mod shared_memory {
                 .collect();
             indices.sort_unstable();
 
-            // Mark pages as free in bitmap
+            // Deduplicate to prevent double-free (overlapping free ranges)
+            indices.dedup();
+
+            // Validate ALL indices BEFORE mutating state (atomicity guarantee)
             for &idx in &indices {
                 if idx >= PHYS_PAGE_COUNT {
                     return Err(Error::new(ErrorKind::InvalidInput, "page index out of range"));
                 }
+            }
+
+            // Now safe to mutate: mark pages as free in bitmap
+            for &idx in &indices {
                 self.phys_bitmap[idx] = false;
             }
 

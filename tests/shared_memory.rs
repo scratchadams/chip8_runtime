@@ -67,7 +67,7 @@ fn munmap_coalesces_adjacent_regions() {
     assert_eq!(pages.len(), 6);
 
     // Verify we got the first 6 pages (they should have been coalesced)
-    for (i, &page) in pages.iter().enumerate() {
+    for i in 0..pages.len() {
         let expected = (i * PAGE_SIZE) as u32;
         assert!(pages.contains(&expected),
             "Expected page at address {:#X} to be in allocated pages", expected);
@@ -134,4 +134,89 @@ fn free_list_prioritized_over_bitmap_scan() {
         assert!(pages1.contains(&page),
             "Page {:#X} should be from the previously freed pages", page);
     }
+}
+
+#[test]
+fn munmap_is_atomic_on_invalid_input() {
+    let mut mem = SharedMemory::new().unwrap();
+
+    // Allocate 5 pages
+    let pages = mem.mmap(5).unwrap();
+    let valid_page1 = pages[0];
+    let valid_page2 = pages[1];
+
+    // Create a page table with valid and invalid pages
+    let invalid_addr = PHYS_MEM_SIZE as u32 + PAGE_SIZE as u32;
+    let mixed_pages = vec![valid_page1, valid_page2, invalid_addr];
+
+    // munmap should fail without modifying state
+    assert!(mem.munmap(&mixed_pages).is_err());
+
+    // Verify that the valid pages are still allocated (not freed)
+    // If they were freed, we could reallocate them
+    let new_pages = mem.mmap(251).unwrap(); // Should succeed (256 - 5 allocated = 251 free)
+    assert_eq!(new_pages.len(), 251);
+
+    // Verify the originally allocated pages are NOT in the new allocation
+    // (proving they're still marked as used, i.e., munmap was atomic)
+    for &page in &pages {
+        assert!(!new_pages.contains(&page),
+            "Page {:#X} should still be allocated (munmap was atomic)", page);
+    }
+}
+
+#[test]
+fn munmap_rejects_double_free_in_same_call() {
+    let mut mem = SharedMemory::new().unwrap();
+
+    // Allocate 3 pages
+    let pages = mem.mmap(3).unwrap();
+
+    // Create a page table with duplicates (double-free attempt)
+    let page_with_dup = vec![pages[0], pages[1], pages[1], pages[2]]; // pages[1] appears twice
+
+    // munmap should handle duplicates gracefully (dedup before processing)
+    assert!(mem.munmap(&page_with_dup).is_ok());
+
+    // Verify pages were freed exactly once - reallocate 3 pages
+    let new_pages = mem.mmap(3).unwrap();
+    assert_eq!(new_pages.len(), 3);
+
+    // Verify we got the same pages back (freed correctly, not double-freed)
+    let mut orig_sorted = pages.clone();
+    let mut new_sorted = new_pages.clone();
+    orig_sorted.sort();
+    new_sorted.sort();
+    assert_eq!(orig_sorted, new_sorted);
+}
+
+#[test]
+fn mmap_rollback_restores_free_list() {
+    let mut mem = SharedMemory::new().unwrap();
+
+    // Allocate and free 10 pages to populate free_list
+    let pages1 = mem.mmap(10).unwrap();
+    assert!(mem.munmap(&pages1).is_ok());
+
+    // Allocate 246 more pages (will consume the 10 from free_list first, then 236 from bitmap)
+    // This leaves pages 246-255 free (10 pages)
+    let pages2 = mem.mmap(246).unwrap();
+    assert_eq!(pages2.len(), 246);
+
+    // Now try to allocate 15 pages - this will:
+    // 1. Scan bitmap, find pages 246-255 (10 pages)
+    // 2. Allocate those 10, need 5 more, none available
+    // 3. Fail and rollback (munmap the 10 allocated pages)
+    let result = mem.mmap(15);
+    assert!(result.is_err());
+
+    // Verify rollback worked by allocating 10 pages (should succeed with the rolled-back pages)
+    let pages3 = mem.mmap(10).unwrap();
+    assert_eq!(pages3.len(), 10);
+
+    // We should be able to allocate those same 10 pages again
+    // The exact pages don't matter, just that rollback freed them
+    assert!(mem.munmap(&pages3).is_ok());
+    let pages4 = mem.mmap(10).unwrap();
+    assert_eq!(pages4.len(), 10);
 }

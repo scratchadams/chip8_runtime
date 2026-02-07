@@ -114,6 +114,22 @@ pub mod kernel {
     }
 
     /// Log syscall error in JSON format to stderr (gated by CHIP8_SYSCALL_ERRORS env var)
+    /// Escape a string for safe inclusion in JSON.
+    /// Handles quotes, backslashes, control characters.
+    fn escape_json_string(s: &str) -> String {
+        s.chars()
+            .flat_map(|c| match c {
+                '"' => vec!['\\', '"'],
+                '\\' => vec!['\\', '\\'],
+                '\n' => vec!['\\', 'n'],
+                '\r' => vec!['\\', 'r'],
+                '\t' => vec!['\\', 't'],
+                c if c.is_control() => format!("\\u{:04x}", c as u32).chars().collect(),
+                c => vec![c],
+            })
+            .collect()
+    }
+
     fn log_syscall_error(pid: u32, syscall_id: u16, error_code: u8, message: &str) {
         if std::env::var(SYSCALL_ERROR_LOG_ENV).is_err() {
             return;
@@ -132,7 +148,7 @@ pub mod kernel {
             syscall_name(syscall_id),
             error_code,
             error_name(error_code),
-            message
+            escape_json_string(message)
         );
     }
 
