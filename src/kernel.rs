@@ -1295,7 +1295,7 @@ pub mod kernel {
         SyscallOutcome::Yielded
     }
 
-    fn sys_write(_kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+    fn sys_write(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
         let buf = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
@@ -1329,15 +1329,17 @@ pub mod kernel {
             return SyscallOutcome::Completed;
         }
 
-        let mut stdout = io::stdout();
-        if stdout.write_all(&data).is_err() {
-            proc.regs.V[0] = ERR_IO;
-            proc.regs.V[0xF] = 1;
-            return SyscallOutcome::Completed;
+        // Use InputDevice trait for host output (enables QEMU/embedded portability)
+        match kernel.write_output(&data) {
+            Ok(written) => {
+                proc.regs.V[0] = (written.min(0xFF)) as u8;
+                proc.regs.V[0xF] = 0;
+            }
+            Err(_) => {
+                proc.regs.V[0] = ERR_IO;
+                proc.regs.V[0xF] = 1;
+            }
         }
-        let _ = stdout.flush();
-        proc.regs.V[0] = (data.len().min(0xFF)) as u8;
-        proc.regs.V[0xF] = 0;
         SyscallOutcome::Completed
     }
 
@@ -1969,6 +1971,14 @@ pub mod kernel {
 
         fn blocking_read_byte(&mut self) -> Result<(), InputError> {
             self.blocking_read_byte_from_stdin().map_err(|_| InputError::Io)
+        }
+
+        fn write_output(&mut self, data: &[u8]) -> Result<usize, InputError> {
+            use std::io::Write;
+            let mut stdout = io::stdout();
+            stdout.write_all(data).map_err(|_| InputError::Io)?;
+            stdout.flush().map_err(|_| InputError::Io)?;
+            Ok(data.len())
         }
     }
 

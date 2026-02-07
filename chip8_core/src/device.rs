@@ -32,11 +32,19 @@ pub mod device {
         Io,
     }
 
-    /// Minimal host input interface for kernel-managed text input.
+    /// Minimal host I/O interface for kernel-managed text input/output.
+    ///
+    /// Abstracts stdin/stdout operations to enable portability:
+    /// - Host targets: uses stdin/stdout
+    /// - QEMU/embedded: uses UART or other serial device
     pub trait InputDevice {
         fn push_input(&mut self, data: &[u8]);
         fn blocking_read_line(&mut self) -> Result<(), InputError>;
         fn blocking_read_byte(&mut self) -> Result<(), InputError>;
+
+        /// Write data to host output (stdout in host targets, UART in embedded).
+        /// Returns number of bytes written or error.
+        fn write_output(&mut self, data: &[u8]) -> Result<usize, InputError>;
     }
 
     #[derive(Copy, Clone, Debug, PartialEq, Eq)]
