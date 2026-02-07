@@ -38,7 +38,7 @@ With the foundation solid, AI assistance (Claude Sonnet 4.5, GitHub Copilot) was
 
 ### Tools Used
 - **Claude Sonnet 4.5**: Architecture design, implementation, testing, documentation
-- **GitHub Copilot**: Code completion during manual sessions
+- **Codex**: Architecture design, implementation, testing, documentation
 
 ### Principles
 AI assistance on this project adheres to these core values (extracted from [agents.md](agents.md)):
