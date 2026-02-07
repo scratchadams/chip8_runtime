@@ -1,5 +1,30 @@
 pub mod shared_memory {
+    #[cfg(feature = "std")]
     use std::io::{Error, ErrorKind};
+
+    #[cfg(not(feature = "std"))]
+    use alloc::{vec, vec::Vec};
+
+    #[cfg(not(feature = "std"))]
+    #[derive(Debug, Clone)]
+    pub struct Error {
+        message: &'static str,
+    }
+
+    #[cfg(not(feature = "std"))]
+    #[derive(Debug, Clone, Copy)]
+    pub enum ErrorKind {
+        InvalidInput,
+        OutOfMemory,
+        Other,
+    }
+
+    #[cfg(not(feature = "std"))]
+    impl Error {
+        pub fn new(_kind: ErrorKind, message: &'static str) -> Self {
+            Error { message }
+        }
+    }
 
     pub const PAGE_SIZE: usize = 0x1000;
     const PHYS_MEM_SIZE: usize = 0x100000;
@@ -19,7 +44,7 @@ pub mod shared_memory {
     }
 
     impl SharedMemory {
-        pub fn new() -> Result<SharedMemory, std::io::Error> {
+        pub fn new() -> Result<SharedMemory, Error> {
             Ok(
                 SharedMemory {
                     phys_mem: vec![0; PHYS_MEM_SIZE],

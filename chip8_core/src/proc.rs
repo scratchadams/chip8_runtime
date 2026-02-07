@@ -1,8 +1,70 @@
 pub mod proc {
-    use std::collections::VecDeque;
-    use std::io::Error;
-    use std::mem::size_of;
-    use std::sync::{Arc, Mutex};
+    use core::mem::size_of;
+
+    #[cfg(feature = "std")]
+    use std::{
+        collections::VecDeque,
+        sync::{Arc, Mutex},
+    };
+
+    #[cfg(feature = "std")]
+    pub use std::io::{Error, ErrorKind};
+
+    #[cfg(not(feature = "std"))]
+    use alloc::{
+        collections::VecDeque,
+        sync::Arc,
+        vec,
+        vec::Vec,
+    };
+
+    // For no_std, we use RefCell instead of Mutex (no threading in embedded contexts)
+    #[cfg(not(feature = "std"))]
+    use core::cell::RefCell;
+
+    #[cfg(not(feature = "std"))]
+    pub struct Mutex<T>(RefCell<T>);
+
+    #[cfg(not(feature = "std"))]
+    impl<T> Mutex<T> {
+        pub fn new(value: T) -> Self {
+            Mutex(RefCell::new(value))
+        }
+
+        pub fn lock(&self) -> Result<core::cell::RefMut<T>, ()> {
+            Ok(self.0.borrow_mut())
+        }
+    }
+
+    // Custom error type for no_std compatibility
+    #[cfg(not(feature = "std"))]
+    #[derive(Debug, Clone)]
+    pub struct Error {
+        kind: ErrorKind,
+        message: &'static str,
+    }
+
+    #[cfg(not(feature = "std"))]
+    #[derive(Debug, Clone, Copy)]
+    pub enum ErrorKind {
+        InvalidInput,
+        Other,
+    }
+
+    #[cfg(not(feature = "std"))]
+    impl Error {
+        pub fn new(kind: ErrorKind, message: &'static str) -> Self {
+            Error { kind, message }
+        }
+    }
+
+    // Convert from shared_memory::Error to proc::Error for no_std
+    #[cfg(not(feature = "std"))]
+    impl From<crate::shared_memory::shared_memory::Error> for Error {
+        fn from(_: crate::shared_memory::shared_memory::Error) -> Self {
+            Error::new(ErrorKind::Other, "memory error")
+        }
+    }
 
     use crate::chip8_engine::chip8_engine::*;
     use crate::device::device::DisplayDevice;
@@ -167,14 +229,14 @@ pub mod proc {
         /// copy-on-write and shared pages.
         pub fn translate(&self, vaddr: u32) -> Result<usize, Error> {
             if vaddr >= self.vm_size {
-                return Err(Error::new(std::io::ErrorKind::Other, "virtual address out of range"));
+                return Err(Error::new(ErrorKind::Other, "virtual address out of range"));
             }
 
             let page = (vaddr as usize) / shared_memory::shared_memory::PAGE_SIZE;
             let offset = (vaddr as usize) % shared_memory::shared_memory::PAGE_SIZE;
             let phys_base = *self.page_table
                 .get(page)
-                .ok_or_else(|| Error::new(std::io::ErrorKind::Other, "page table index out of range"))? as usize;
+                .ok_or_else(|| Error::new(ErrorKind::Other, "page table index out of range"))? as usize;
 
             Ok(phys_base + offset)
         }
@@ -196,7 +258,8 @@ pub mod proc {
             self.mem
                 .lock()
                 .unwrap()
-                .write(phys, &data, data.len())
+                .write(phys, &data, data.len())?;
+            Ok(())
         }
 
         // write a byte slice across page boundaries if needed.
@@ -204,7 +267,7 @@ pub mod proc {
             for (idx, byte) in data.iter().enumerate() {
                 let addr = vaddr
                     .checked_add(idx as u32)
-                    .ok_or_else(|| Error::new(std::io::ErrorKind::Other, "overflow computing write address"))?;
+                    .ok_or_else(|| Error::new(ErrorKind::Other, "overflow computing write address"))?;
                 self.write_u8(addr, *byte)?;
             }
             Ok(())
@@ -216,7 +279,7 @@ pub mod proc {
             for idx in 0..len {
                 let addr = vaddr
                     .checked_add(idx as u32)
-                    .ok_or_else(|| Error::new(std::io::ErrorKind::Other, "overflow computing read address"))?;
+                    .ok_or_else(|| Error::new(ErrorKind::Other, "overflow computing read address"))?;
                 data.push(self.read_u8(addr)?);
             }
             Ok(data)
@@ -236,7 +299,7 @@ pub mod proc {
         pub fn load_program_bytes(&mut self, program: &[u8]) -> Result<(), Error> {
             let max_size = self.vm_size as usize - 0x200;
             if program.len() > max_size {
-                return Err(Error::new(std::io::ErrorKind::InvalidInput, "File too large"));
+                return Err(Error::new(ErrorKind::InvalidInput, "File too large"));
             }
 
             //copy sprites into process memory

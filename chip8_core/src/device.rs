@@ -1,4 +1,7 @@
 pub mod device {
+    #[cfg(not(feature = "std"))]
+    use alloc::{string::String, vec::Vec};
+
     use crate::proc::proc::Registers;
 
     #[derive(Copy, Clone, Debug, PartialEq, Eq)]
