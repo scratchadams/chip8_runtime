@@ -4,6 +4,10 @@ version = "0.1.0"
 edition = "2021"
 default-run = "chip8_runtime"
 
+[features]
+default = []
+fs_write = []  # Enable filesystem write operations (disabled by default for safety)
+
 [dependencies]
 minifb = "0.28.0"
 chip8_core = { path = "chip8_core" }

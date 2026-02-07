@@ -28,6 +28,7 @@ pub mod kernel {
     const SYS_FS_OPEN: u16 = 0x0121;
     const SYS_FS_READ: u16 = 0x0122;
     const SYS_FS_CLOSE: u16 = 0x0123;
+    const SYS_FS_WRITE: u16 = 0x0124;
     const SYS_DBG_LIST: u16 = 0x0130;
     const SYS_DBG_REGS: u16 = 0x0131;
     const SYS_DBG_MEM_READ: u16 = 0x0132;
@@ -86,6 +87,7 @@ pub mod kernel {
             SYS_FS_OPEN => "sys_fs_open",
             SYS_FS_READ => "sys_fs_read",
             SYS_FS_CLOSE => "sys_fs_close",
+            SYS_FS_WRITE => "sys_fs_write",
             SYS_DBG_LIST => "sys_dbg_list",
             SYS_DBG_REGS => "sys_dbg_regs",
             SYS_DBG_MEM_READ => "sys_dbg_mem_read",
@@ -399,6 +401,8 @@ pub mod kernel {
             self.register_syscall(SYS_FS_OPEN, sys_fs_open)?;
             self.register_syscall(SYS_FS_READ, sys_fs_read)?;
             self.register_syscall(SYS_FS_CLOSE, sys_fs_close)?;
+            #[cfg(feature = "fs_write")]
+            self.register_syscall(SYS_FS_WRITE, sys_fs_write)?;
             self.register_syscall(SYS_DBG_LIST, sys_dbg_list)?;
             self.register_syscall(SYS_DBG_REGS, sys_dbg_regs)?;
             self.register_syscall(SYS_DBG_MEM_READ, sys_dbg_mem_read)?;
@@ -1094,7 +1098,7 @@ pub mod kernel {
             Ok(out)
         }
 
-        fn fs_open_path(&mut self, pid: u32, path: &str) -> Result<u8, FsError> {
+        fn fs_open_path(&mut self, pid: u32, path: &str, flags: u16) -> Result<u8, FsError> {
             let file_path = self
                 .resolve_fs_path(path)
                 .map_err(|err| if err.kind() == ErrorKind::NotFound { FsError::NotFound } else { FsError::Path })?;
@@ -1112,6 +1116,21 @@ pub mod kernel {
                 return Err(FsError::TooManyOpen);
             }
 
+            // flags bit 0: write mode (0 = read-only, 1 = read-write)
+            // Only respect write flag if fs_write feature is enabled
+            #[cfg(feature = "fs_write")]
+            let file = if flags & 0x01 != 0 {
+                fs::OpenOptions::new()
+                    .read(true)
+                    .write(true)
+                    .create(true)
+                    .open(&file_path)
+                    .map_err(|_| FsError::Io)?
+            } else {
+                fs::File::open(&file_path).map_err(|_| FsError::Io)?
+            };
+
+            #[cfg(not(feature = "fs_write"))]
             let file = fs::File::open(&file_path).map_err(|_| FsError::Io)?;
 
             let mut fd = table.next_fd;
@@ -1142,6 +1161,17 @@ pub mod kernel {
             let read = file.read(&mut data).map_err(|_| FsError::Io)?;
             data.truncate(read);
             Ok(data)
+        }
+
+        #[cfg(feature = "fs_write")]
+        fn fs_write_fd(&mut self, pid: u32, fd: u8, data: &[u8]) -> Result<usize, FsError> {
+            use std::io::Write;
+            let table = self.fd_tables.get_mut(&pid).ok_or(FsError::NotFound)?;
+            let file = table.fds.get_mut(&fd).ok_or(FsError::NotFound)?;
+
+            let written = file.write(data).map_err(|_| FsError::Io)?;
+            file.flush().map_err(|_| FsError::Io)?;
+            Ok(written)
         }
 
         fn fs_close_fd(&mut self, pid: u32, fd: u8) -> Result<(), FsError> {
@@ -1701,7 +1731,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let _flags = Kernel::syscall_arg(proc, 2).unwrap_or(0);
+        let flags = Kernel::syscall_arg(proc, 2).unwrap_or(0);
 
         let path_bytes = match proc.read_bytes(path_ptr as u32, path_len as usize) {
             Ok(val) => val,
@@ -1712,7 +1742,7 @@ pub mod kernel {
             }
         };
         let path_str = String::from_utf8_lossy(&path_bytes).to_string();
-        let fd = match kernel.fs_open_path(pid, &path_str) {
+        let fd = match kernel.fs_open_path(pid, &path_str, flags) {
             Ok(val) => val,
             Err(err) => {
                 proc.regs.V[0] = Kernel::fs_error_to_code(err);
@@ -1786,6 +1816,61 @@ pub mod kernel {
             return SyscallOutcome::Completed;
         }
         proc.regs.V[0xF] = 0;
+        SyscallOutcome::Completed
+    }
+
+    #[cfg(feature = "fs_write")]
+    fn sys_fs_write(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let fd = match Kernel::syscall_arg(proc, 0) {
+            Ok(val) => val as u8,
+            Err(_) => {
+                log_syscall_error(pid, SYS_FS_WRITE, ERR_INVALID, "syscall frame too small for fd");
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let buf = match Kernel::syscall_arg(proc, 1) {
+            Ok(val) => val,
+            Err(_) => {
+                log_syscall_error(pid, SYS_FS_WRITE, ERR_INVALID, "syscall frame too small for buf");
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let len = match Kernel::syscall_arg(proc, 2) {
+            Ok(val) => val as usize,
+            Err(_) => {
+                log_syscall_error(pid, SYS_FS_WRITE, ERR_INVALID, "syscall frame too small for len");
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        let data = match proc.read_bytes(buf as u32, len) {
+            Ok(val) => val,
+            Err(_) => {
+                log_syscall_error(pid, SYS_FS_WRITE, ERR_INVALID, "buffer read failed (out of bounds)");
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        match kernel.fs_write_fd(pid, fd, &data) {
+            Ok(written) => {
+                proc.regs.V[0] = written.min(0xFF) as u8;
+                proc.regs.V[0xF] = 0;
+            }
+            Err(err) => {
+                let code = Kernel::fs_error_to_code(err);
+                log_syscall_error(pid, SYS_FS_WRITE, code, "file write failed");
+                proc.regs.V[0] = code;
+                proc.regs.V[0xF] = 1;
+            }
+        }
         SyscallOutcome::Completed
     }
 
@@ -2080,7 +2165,7 @@ pub mod kernel {
         }
 
         fn open(&mut self, pid: u32, path: &str) -> Result<u8, FsError> {
-            self.fs_open_path(pid, path)
+            self.fs_open_path(pid, path, 0)  // Default to read-only for trait impl
         }
 
         fn read(&mut self, pid: u32, fd: u8, len: usize) -> Result<Vec<u8>, FsError> {
