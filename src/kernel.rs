@@ -734,6 +734,12 @@ pub mod kernel {
                 entry.waiting_for = None;
                 self.unblock_waiters(pid, code);
                 self.fd_tables.remove(&pid);
+
+                // Free allocated pages when process exits
+                let page_table = entry.proc.page_table.clone();
+                if let Ok(mut mem) = self.mem.lock() {
+                    let _ = mem.munmap(&page_table);
+                }
             } else if let Some(wait) = self.pending_block.remove(&pid) {
                 entry.state = ProcState::Blocked;
                 entry.waiting_for = Some(wait);

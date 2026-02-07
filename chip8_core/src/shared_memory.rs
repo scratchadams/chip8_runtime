@@ -43,6 +43,7 @@ pub mod shared_memory {
     pub struct SharedMemory {
         pub phys_mem: Vec<u8>,
         phys_bitmap: Vec<bool>,
+        free_list: Vec<(usize, usize)>, // (base_page_index, count)
     }
 
     impl SharedMemory {
@@ -51,6 +52,7 @@ pub mod shared_memory {
                 SharedMemory {
                     phys_mem: vec![0; PHYS_MEM_SIZE],
                     phys_bitmap: vec![false; PHYS_PAGE_COUNT],
+                    free_list: Vec::new(),
                 }
             )
         }
@@ -58,34 +60,168 @@ pub mod shared_memory {
         /// mmap returns a list of physical page bases for a process page table.
         /// The returned pages form a contiguous virtual range, but may map to
         /// non-contiguous physical locations.
-        /// this allocator is first-fit and does not yet support freeing.
+        /// First-fit strategy: checks free_list for coalesced regions before scanning bitmap.
         pub fn mmap(&mut self, pages: u16) -> Result<Vec<u32>, Error> {
             if pages == 0 {
                 return Err(Error::new(ErrorKind::InvalidInput, "page count must be > 0"));
             }
 
-            // collect free pages first to avoid partial allocations.
-            let mut free_indices: Vec<usize> = Vec::new();
-            for (idx, used) in self.phys_bitmap.iter().enumerate() {
-                if !*used {
-                    free_indices.push(idx);
-                    if free_indices.len() == pages as usize {
+            let needed = pages as usize;
+            let mut allocated: Vec<u32> = Vec::with_capacity(needed);
+
+            // First, try to satisfy allocation from free_list
+            let mut i = 0;
+            while i < self.free_list.len() && allocated.len() < needed {
+                let (base, count) = self.free_list[i];
+                let take = (needed - allocated.len()).min(count);
+
+                // Allocate from this free region
+                for offset in 0..take {
+                    let idx = base + offset;
+                    self.phys_bitmap[idx] = true;
+                    allocated.push((idx * PAGE_SIZE) as u32);
+                }
+
+                if take == count {
+                    // Consumed entire region, remove it
+                    self.free_list.remove(i);
+                } else {
+                    // Partial consumption, update region
+                    self.free_list[i] = (base + take, count - take);
+                    i += 1;
+                }
+            }
+
+            // If free_list didn't satisfy the allocation, scan bitmap for remaining pages
+            if allocated.len() < needed {
+                // Collect free indices first to avoid borrow checker issues
+                let mut free_indices: Vec<usize> = Vec::new();
+                for (idx, used) in self.phys_bitmap.iter().enumerate() {
+                    if !*used {
+                        free_indices.push(idx);
+                        if free_indices.len() >= needed - allocated.len() {
+                            break;
+                        }
+                    }
+                }
+
+                // Now mark them as used and add to allocated
+                for idx in free_indices {
+                    self.phys_bitmap[idx] = true;
+                    allocated.push((idx * PAGE_SIZE) as u32);
+                    if allocated.len() == needed {
                         break;
                     }
                 }
             }
 
-            if free_indices.len() < pages as usize {
+            if allocated.len() < needed {
+                // Allocation failed, rollback
+                for &page_base in &allocated {
+                    let idx = (page_base as usize) / PAGE_SIZE;
+                    self.phys_bitmap[idx] = false;
+                }
                 return Err(Error::new(ErrorKind::OutOfMemory, "insufficient free pages"));
             }
 
-            let mut allocated: Vec<u32> = Vec::with_capacity(pages as usize);
-            for idx in free_indices {
-                self.phys_bitmap[idx] = true;
-                allocated.push((idx * PAGE_SIZE) as u32);
+            Ok(allocated)
+        }
+
+        /// Free pages back to the allocator, coalescing adjacent free regions.
+        /// First-fit strategy: maintains free_list sorted by base index.
+        pub fn munmap(&mut self, page_table: &[u32]) -> Result<(), Error> {
+            if page_table.is_empty() {
+                return Ok(());
             }
 
-            Ok(allocated)
+            // Convert physical addresses to page indices
+            let mut indices: Vec<usize> = page_table
+                .iter()
+                .map(|&addr| (addr as usize) / PAGE_SIZE)
+                .collect();
+            indices.sort_unstable();
+
+            // Mark pages as free in bitmap
+            for &idx in &indices {
+                if idx >= PHYS_PAGE_COUNT {
+                    return Err(Error::new(ErrorKind::InvalidInput, "page index out of range"));
+                }
+                self.phys_bitmap[idx] = false;
+            }
+
+            // Add freed regions to free_list with coalescing
+            let mut i = 0;
+            while i < indices.len() {
+                let base = indices[i];
+                let mut count = 1;
+
+                // Count contiguous pages
+                while i + count < indices.len() && indices[i + count] == base + count {
+                    count += 1;
+                }
+
+                // Insert into free_list, maintaining sorted order and coalescing
+                self.insert_and_coalesce(base, count);
+
+                i += count;
+            }
+
+            Ok(())
+        }
+
+        /// Insert a free region into free_list, coalescing with adjacent regions.
+        fn insert_and_coalesce(&mut self, base: usize, count: usize) {
+            let end = base + count;
+
+            // Find insertion point and check for coalescence opportunities
+            let mut insert_idx = self.free_list.len();
+            let mut coalesce_with_prev = false;
+            let mut coalesce_with_next = false;
+
+            for (idx, &(free_base, free_count)) in self.free_list.iter().enumerate() {
+                let free_end = free_base + free_count;
+
+                // Check if new region is adjacent to this one
+                if free_end == base {
+                    // Coalesce with previous region
+                    insert_idx = idx;
+                    coalesce_with_prev = true;
+                } else if end == free_base {
+                    // Coalesce with next region
+                    if coalesce_with_prev {
+                        // Coalesce all three: prev + new + next
+                        coalesce_with_next = true;
+                        break;
+                    } else {
+                        insert_idx = idx;
+                        coalesce_with_next = true;
+                        break;
+                    }
+                } else if free_base > end && insert_idx == self.free_list.len() {
+                    // Found insertion point (maintain sorted order)
+                    insert_idx = idx;
+                    break;
+                }
+            }
+
+            if coalesce_with_prev && coalesce_with_next {
+                // Merge prev + new + next
+                let (prev_base, prev_count) = self.free_list[insert_idx];
+                let (_, next_count) = self.free_list[insert_idx + 1];
+                self.free_list[insert_idx] = (prev_base, prev_count + count + next_count);
+                self.free_list.remove(insert_idx + 1);
+            } else if coalesce_with_prev {
+                // Merge with previous
+                let (prev_base, prev_count) = self.free_list[insert_idx];
+                self.free_list[insert_idx] = (prev_base, prev_count + count);
+            } else if coalesce_with_next {
+                // Merge with next
+                let (_next_base, next_count) = self.free_list[insert_idx];
+                self.free_list[insert_idx] = (base, count + next_count);
+            } else {
+                // No coalescing, just insert
+                self.free_list.insert(insert_idx, (base, count));
+            }
         }
 
 
@@ -147,6 +283,11 @@ pub mod shared_memory {
         fn mmap(&mut self, pages: u16) -> Result<Vec<u32>, AllocError> {
             // Delegate to existing mmap implementation, converting error types
             SharedMemory::mmap(self, pages).map_err(|_| AllocError::OutOfMemory)
+        }
+
+        fn munmap(&mut self, page_table: &[u32]) -> Result<(), AllocError> {
+            // Delegate to existing munmap implementation, converting error types
+            SharedMemory::munmap(self, page_table).map_err(|_| AllocError::Other)
         }
 
         fn write(&mut self, addr: usize, data: &[u8]) -> Result<(), AllocError> {

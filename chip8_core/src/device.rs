@@ -90,7 +90,7 @@ pub mod device {
     /// Memory allocator abstraction for page-based memory management.
     ///
     /// Enables different allocation strategies:
-    /// - SharedMemory: Dynamic allocation from heap (std targets)
+    /// - SharedMemory: Dynamic allocation from heap with free list (std targets)
     /// - FixedArena: Static allocation from fixed-size array (no_std embedded)
     /// - QEMU: Direct physical memory access
     ///
@@ -100,11 +100,9 @@ pub mod device {
         /// Pages form a contiguous virtual range but may map to non-contiguous physical.
         fn mmap(&mut self, pages: u16) -> Result<Vec<u32>, AllocError>;
 
-        /// Free previously allocated pages (future: enables resource reclamation).
-        fn munmap(&mut self, _page_table: &[u32]) -> Result<(), AllocError> {
-            // Default implementation: no-op (for allocators that don't support freeing)
-            Ok(())
-        }
+        /// Free previously allocated pages. Required for resource reclamation.
+        /// Implementations should mark pages as free and coalesce adjacent regions.
+        fn munmap(&mut self, page_table: &[u32]) -> Result<(), AllocError>;
 
         /// Write data to physical memory at the given address.
         fn write(&mut self, addr: usize, data: &[u8]) -> Result<(), AllocError>;
