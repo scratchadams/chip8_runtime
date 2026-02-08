@@ -112,6 +112,9 @@ Error codes currently in use:
 0x0132 = dbg_mem_read
 0x0133 = dbg_mem_write
 0x0134 = dbg_trace_read
+0x0140 = perf_mem_stats
+0x0141 = perf_proc_info
+0x0142 = set_timing
 ```
 
 ---
@@ -501,6 +504,105 @@ Syscall op codes:
 0x02 = yielded
 0x03 = blocked
 0x04 = error
+```
+
+---
+
+### 0x0140 perf_mem_stats
+
+Get memory allocation statistics from the shared allocator.
+
+Args:
+```
+arg0 = out_ptr (where to write 10-byte stats struct)
+```
+
+Returns:
+```
+V0 = 1 on success
+VF = 0 on success, 1 on error
+```
+
+Output struct (10 bytes at out_ptr):
+```
+bytes 0-1: total_pages (u16, big-endian)
+bytes 2-3: used_pages (u16, big-endian)
+bytes 4-5: free_regions (u16, big-endian)
+bytes 6-9: reserved (zero padding)
+```
+
+---
+
+### 0x0141 perf_proc_info
+
+Get process information for debugging and monitoring.
+
+Args:
+```
+arg0 = target_pid (0 = self)
+arg1 = out_ptr (where to write 16-byte process info struct)
+```
+
+Returns:
+```
+V0 = 1 on success
+VF = 0 on success, 1 on error
+```
+
+Output struct (16 bytes at out_ptr):
+```
+bytes 0-1:  pid (u16, big-endian)
+bytes 2-3:  state (u16: 0=running, 1=blocked, 2=exited)
+bytes 4-5:  vm_pages (u16, number of allocated pages)
+bytes 6-7:  stack_ptr (u16, SP register value)
+bytes 8-9:  pc (u16, PC register value)
+bytes 10-11: input_mode (u16: 0=line, 1=byte)
+bytes 12-13: console_mode (u16: 0=display, 1=host)
+bytes 14-15: reserved (zero padding)
+```
+
+---
+
+### 0x0142 set_timing
+
+Configure per-process timing and execution speed.
+
+This syscall enables different execution modes:
+- **Legacy mode**: Set `target_ips=3600` for authentic 60Hz CHIP-8 emulation (60 Hz × 60 instructions/frame)
+- **Full-speed mode**: Set `target_ips=0` for unlimited CPU speed (modern programs, CLI, debugger)
+- **Custom timeslice**: Set `timeslice_steps` to control preemption frequency
+
+Args:
+```
+arg0 = target_pid (0 = self, other PIDs to configure other processes)
+arg1 = timeslice_steps (0 = use kernel default, non-zero = instructions per timeslice)
+arg2 = target_ips (0 = unlimited, non-zero = instructions per second throttling)
+arg3 = timer_hz (0 = use kernel default 60Hz, non-zero = custom timer tick rate)
+```
+
+Returns:
+```
+V0 = 1 on success
+VF = 0 on success, 1 on error
+```
+
+Notes:
+- `timeslice_steps` controls how many instructions execute before preemption for fair scheduling
+- `target_ips` enables per-instruction throttling for legacy compatibility (sleep between instructions)
+- `timer_hz` is reserved for future use (currently not implemented in timer tick calculation)
+- Setting `target_pid=0` configures the calling process
+- Setting `target_pid` to another PID requires that process to exist
+
+Example configurations:
+```
+# Legacy CHIP-8 game (60Hz)
+timeslice_steps=200, target_ips=3600, timer_hz=60
+
+# Modern full-speed program (CLI, debugger)
+timeslice_steps=1000, target_ips=0, timer_hz=0
+
+# Use kernel defaults
+timeslice_steps=0, target_ips=0, timer_hz=0
 ```
 
 ---

@@ -627,3 +627,65 @@ fn sys_write_rejects_buffer_outside_memory() {
 
     let _ = fs::remove_dir_all(root);
 }
+
+#[test]
+fn sys_set_timing_configures_process_timing() {
+    set_headless();
+    let root = temp_root("set_timing");
+    let mut kernel = make_kernel(&root);
+    let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
+
+    {
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        // SYS_SET_TIMING frame:
+        //   target_pid=0 (self), timeslice_steps=1000, target_ips=3600, timer_hz=60
+        write_frame(&mut proc, 0x300, &[
+            0,     // target_pid (0 = self)
+            1000,  // timeslice_steps
+            3600,  // target_ips (60Hz legacy mode)
+            60,    // timer_hz
+        ]);
+        proc.regs.I = 0x300;
+        write_opcode_at_pc(&mut proc, 0x0142);  // SYS_SET_TIMING
+    }
+
+    let outcome = kernel.step_proc(pid).unwrap();
+    assert_eq!(outcome, SyscallOutcome::Completed);
+
+    {
+        let proc = kernel.proc(pid).unwrap();
+        // Should succeed
+        assert_eq!(proc.regs.V[0xF], 0, "VF should be 0 (success)");
+        assert_eq!(proc.regs.V[0], 1, "V0 should be 1 (success)");
+    }
+
+    let _ = fs::remove_dir_all(root);
+}
+
+#[test]
+fn sys_set_timing_rejects_invalid_process() {
+    set_headless();
+    let root = temp_root("set_timing_invalid_pid");
+    let mut kernel = make_kernel(&root);
+    let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
+
+    {
+        let mut proc = kernel.proc_mut(pid).unwrap();
+        // Try to configure non-existent process (PID 9999)
+        write_frame(&mut proc, 0x300, &[9999, 1000, 0, 0]);
+        proc.regs.I = 0x300;
+        write_opcode_at_pc(&mut proc, 0x0142);  // SYS_SET_TIMING
+    }
+
+    let outcome = kernel.step_proc(pid).unwrap();
+    assert_eq!(outcome, SyscallOutcome::Completed);
+
+    {
+        let proc = kernel.proc(pid).unwrap();
+        // Should fail with not found error
+        assert_eq!(proc.regs.V[0xF], 1, "VF should be 1 (error)");
+        assert_eq!(proc.regs.V[0], 0x04, "V0 should be 0x04 (not found)");
+    }
+
+    let _ = fs::remove_dir_all(root);
+}

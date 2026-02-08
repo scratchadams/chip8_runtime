@@ -36,6 +36,7 @@ pub mod kernel {
     const SYS_DBG_TRACE_READ: u16 = 0x0134;
     const SYS_PERF_MEM_STATS: u16 = 0x0140;
     const SYS_PERF_PROC_INFO: u16 = 0x0141;
+    const SYS_SET_TIMING: u16 = 0x0142;
 
     const ERR_INVALID: u8 = 0x02;
     const ERR_IO: u8 = 0x03;
@@ -97,6 +98,7 @@ pub mod kernel {
             SYS_DBG_TRACE_READ => "sys_dbg_trace_read",
             SYS_PERF_MEM_STATS => "sys_perf_mem_stats",
             SYS_PERF_PROC_INFO => "sys_perf_proc_info",
+            SYS_SET_TIMING => "sys_set_timing",
             _ => "unknown",
         }
     }
@@ -281,12 +283,42 @@ pub mod kernel {
         Read { buf: u16, len: u16, mode: InputMode },
     }
 
+    /// Per-process timing configuration for execution control.
+    ///
+    /// Allows different processes to run at different speeds:
+    /// - Legacy CHIP-8 programs can run at authentic 60Hz with throttling
+    /// - Modern programs (CLI, debugger) can run at full CPU speed
+    /// - Timeslice controls preemption frequency for fair scheduling
+    #[derive(Copy, Clone, Debug)]
+    struct TimingConfig {
+        /// Instructions per timeslice before preemption (0 = use kernel default)
+        timeslice_steps: u32,
+        /// Target instructions per second (0 = unlimited, run at full speed)
+        /// Set to 3600 for authentic 60Hz CHIP-8 (60 Hz * 60 instructions/frame)
+        target_ips: u32,
+        /// Timer tick rate in Hz (0 = use kernel default of 60Hz)
+        /// Legacy CHIP-8: 60Hz, Modern: higher for better granularity
+        timer_hz: u16,
+    }
+
+    impl Default for TimingConfig {
+        fn default() -> Self {
+            TimingConfig {
+                timeslice_steps: 0,  // Use kernel default
+                target_ips: 0,       // Full speed
+                timer_hz: 0,         // Use kernel default (60Hz)
+            }
+        }
+    }
+
     struct ProcEntry {
         proc: Proc,
         context: Context,
         state: ProcState,
         exit_code: Option<u8>,
         waiting_for: Option<WaitTarget>,
+        timing: TimingConfig,
+        last_throttle: Instant,  // For target_ips throttling
     }
 
     pub struct ProcGuard<'a> {
@@ -328,6 +360,7 @@ pub mod kernel {
         input: VecDeque<u8>,
         pending_exit: HashMap<u32, u8>,
         pending_block: HashMap<u32, WaitTarget>,
+        pending_timing: HashMap<u32, TimingConfig>,
         last_timer_tick: Instant,
         timeslice_steps: u32,
         scheduler: Box<dyn SchedulerPolicy>,
@@ -400,6 +433,7 @@ pub mod kernel {
                 input: VecDeque::new(),
                 pending_exit: HashMap::new(),
                 pending_block: HashMap::new(),
+                pending_timing: HashMap::new(),
                 last_timer_tick: Instant::now(),
                 timeslice_steps: DEFAULT_TIMESLICE_STEPS,
                 scheduler: Box::new(RoundRobinScheduler::default()),
@@ -430,6 +464,7 @@ pub mod kernel {
             self.register_syscall(SYS_DBG_TRACE_READ, sys_dbg_trace_read)?;
             self.register_syscall(SYS_PERF_MEM_STATS, sys_perf_mem_stats)?;
             self.register_syscall(SYS_PERF_PROC_INFO, sys_perf_proc_info)?;
+            self.register_syscall(SYS_SET_TIMING, sys_set_timing)?;
             Ok(())
         }
 
@@ -491,6 +526,8 @@ pub mod kernel {
                     state: ProcState::Running,
                     exit_code: None,
                     waiting_for: None,
+                    timing: TimingConfig::default(),
+                    last_throttle: Instant::now(),
                 },
             );
             self.fd_tables.insert(
@@ -740,7 +777,16 @@ pub mod kernel {
         }
 
         fn run_proc_until_yield_or_block(&mut self, pid: u32) -> Result<ScheduleReason, Error> {
-            let slice = self.timeslice_steps.max(1);
+            // Get per-process timeslice (or fall back to kernel default)
+            let entry_timing = self.procs.get(&pid)
+                .map(|e| e.timing)
+                .unwrap_or_default();
+            let slice = if entry_timing.timeslice_steps > 0 {
+                entry_timing.timeslice_steps
+            } else {
+                self.timeslice_steps.max(1)
+            };
+
             let mut steps = 0u32;
             loop {
                 if steps >= slice {
@@ -754,6 +800,16 @@ pub mod kernel {
                 if entry.state != ProcState::Running {
                     self.procs.insert(pid, entry);
                     return Ok(ScheduleReason::Blocked);
+                }
+
+                // Apply per-instruction throttling if target_ips is set (legacy mode)
+                if entry.timing.target_ips > 0 {
+                    let target_interval = Duration::from_nanos(1_000_000_000 / entry.timing.target_ips as u64);
+                    let elapsed = entry.last_throttle.elapsed();
+                    if elapsed < target_interval {
+                        thread::sleep(target_interval - elapsed);
+                    }
+                    entry.last_throttle = Instant::now();
                 }
 
                 entry.proc.restore_context(&entry.context);
@@ -820,6 +876,11 @@ pub mod kernel {
         }
 
         fn apply_pending(&mut self, pid: u32, entry: &mut ProcEntry, outcome: SyscallOutcome) {
+            // Apply pending timing configuration if present
+            if let Some(timing) = self.pending_timing.remove(&pid) {
+                entry.timing = timing;
+            }
+
             if let Some(code) = self.pending_exit.remove(&pid) {
                 entry.state = ProcState::Exited;
                 entry.exit_code = Some(code);
@@ -2328,6 +2389,97 @@ pub mod kernel {
             proc.regs.V[0] = ERR_INVALID;
             proc.regs.V[0xF] = 1;
             return SyscallOutcome::Completed;
+        }
+
+        proc.regs.V[0] = 1;
+        proc.regs.V[0xF] = 0;
+        SyscallOutcome::Completed
+    }
+
+    /// SYS_SET_TIMING (0x0142): Configure per-process timing
+    ///
+    /// Allows processes to control their execution speed and scheduling behavior.
+    /// Legacy CHIP-8 programs can run at authentic 60Hz, while modern programs
+    /// (CLI, debugger) can run at full speed.
+    ///
+    /// Frame structure (8 bytes):
+    ///   - len: 1 byte (0x08)
+    ///   - syscall_id: 2 bytes (0x0142)
+    ///   - target_pid: 2 bytes (0 = self)
+    ///   - timeslice_steps_high: 1 byte
+    ///   - timeslice_steps_low: 1 byte (combined: 0 = use kernel default)
+    ///   - target_ips_high: 1 byte
+    ///   - target_ips_low: 1 byte (combined: 0 = unlimited)
+    ///   - timer_hz_high: 1 byte
+    ///   - timer_hz_low: 1 byte (combined: 0 = use kernel default 60Hz)
+    ///
+    /// Error codes: ERR_INVALID, ERR_NOT_FOUND
+    fn sys_set_timing(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let target_pid = match Kernel::syscall_arg(proc, 0) {
+            Ok(val) => val as u32,
+            Err(_) => {
+                log_syscall_error(pid, SYS_SET_TIMING, ERR_INVALID, "syscall frame too small for target_pid");
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        let timeslice_steps = match Kernel::syscall_arg(proc, 1) {
+            Ok(val) => val as u32,
+            Err(_) => {
+                log_syscall_error(pid, SYS_SET_TIMING, ERR_INVALID, "syscall frame too small for timeslice_steps");
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        let target_ips = match Kernel::syscall_arg(proc, 2) {
+            Ok(val) => val as u32,
+            Err(_) => {
+                log_syscall_error(pid, SYS_SET_TIMING, ERR_INVALID, "syscall frame too small for target_ips");
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        let timer_hz = match Kernel::syscall_arg(proc, 3) {
+            Ok(val) => val,
+            Err(_) => {
+                log_syscall_error(pid, SYS_SET_TIMING, ERR_INVALID, "syscall frame too small for timer_hz");
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        // If target_pid is 0, use calling process's PID
+        let actual_pid = if target_pid == 0 { pid } else { target_pid };
+
+        // Create timing configuration
+        let timing = TimingConfig {
+            timeslice_steps,
+            target_ips,
+            timer_hz,
+        };
+
+        // If configuring self, use pending_timing (proc is not in kernel.procs during syscall)
+        if actual_pid == pid {
+            kernel.pending_timing.insert(pid, timing);
+        } else {
+            // Configuring another process - look it up directly
+            let entry = match kernel.procs.get_mut(&actual_pid) {
+                Some(val) => val,
+                None => {
+                    log_syscall_error(pid, SYS_SET_TIMING, ERR_NOT_FOUND, "target process not found");
+                    proc.regs.V[0] = ERR_NOT_FOUND;
+                    proc.regs.V[0xF] = 1;
+                    return SyscallOutcome::Completed;
+                }
+            };
+            entry.timing = timing;
         }
 
         proc.regs.V[0] = 1;
