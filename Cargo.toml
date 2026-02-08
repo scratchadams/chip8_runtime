@@ -5,7 +5,8 @@ edition = "2021"
 default-run = "chip8_runtime"
 
 [features]
-default = []
+default = ["std"]
+std = []  # Standard library support (enabled by default)
 fs_write = []  # Enable filesystem write operations (disabled by default for safety)
 
 [dependencies]

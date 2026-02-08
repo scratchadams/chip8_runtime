@@ -7,6 +7,7 @@ use chip8_runtime::display::display::DisplayWindow;
 use chip8_runtime::kernel::kernel::{Kernel, ProcState, SyscallOutcome};
 use chip8_runtime::proc::proc::Proc;
 use chip8_runtime::shared_memory::shared_memory::SharedMemory;
+use chip8_runtime::timing::timing::StdTimeProvider;
 
 const MAX_FILENAME_LEN: usize = 64;
 const DIR_ENTRY_SIZE: usize = 1 + MAX_FILENAME_LEN + 1 + 4;
@@ -34,9 +35,10 @@ fn temp_root(label: &str) -> PathBuf {
     path
 }
 
-fn make_kernel(root: &Path) -> Kernel {
+fn make_kernel(root: &Path) -> Kernel<StdTimeProvider> {
     let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
-    let mut kernel = Kernel::new(mem, root.to_path_buf()).unwrap();
+    let time = StdTimeProvider::new();
+    let mut kernel = Kernel::new(mem, root.to_path_buf(), time).unwrap();
     kernel.register_base_syscalls().unwrap();
     kernel
 }

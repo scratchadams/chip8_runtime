@@ -1,5 +1,6 @@
 use chip8_runtime::kernel::kernel::Kernel;
 use chip8_runtime::shared_memory::shared_memory::SharedMemory;
+use chip8_runtime::timing::timing::StdTimeProvider;
 use std::env;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -11,7 +12,8 @@ fn syscall_errors_logged_when_env_var_set() {
 
     let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
     let root = PathBuf::from("./roms");
-    let mut kernel = Kernel::new(mem, root).unwrap();
+    let time = StdTimeProvider::new();
+    let mut kernel = Kernel::new(mem, root, time).unwrap();
     kernel.register_base_syscalls().unwrap();
 
     // Create a process with invalid syscall frames to trigger errors
@@ -33,7 +35,8 @@ fn syscall_errors_not_logged_without_env_var() {
 
     let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
     let root = PathBuf::from("./roms");
-    let mut kernel = Kernel::new(mem, root).unwrap();
+    let time = StdTimeProvider::new();
+    let mut kernel = Kernel::new(mem, root, time).unwrap();
     kernel.register_base_syscalls().unwrap();
 
     // Create a process

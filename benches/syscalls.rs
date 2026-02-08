@@ -2,6 +2,7 @@ use criterion::{black_box, criterion_group, criterion_main, Criterion};
 use chip8_runtime::kernel::kernel::Kernel;
 use chip8_runtime::shared_memory::shared_memory::SharedMemory;
 use chip8_runtime::display::display::DisplayWindow;
+use chip8_runtime::timing::timing::StdTimeProvider;
 use std::sync::{Arc, Mutex};
 use std::path::PathBuf;
 
@@ -9,7 +10,8 @@ fn benchmark_syscall_dispatch(c: &mut Criterion) {
     c.bench_function("syscall_dispatch_yield", |b| {
         let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
         let root = PathBuf::from("./roms");
-        let mut kernel = Kernel::new(mem, root).unwrap();
+        let time = StdTimeProvider::new();
+        let mut kernel = Kernel::new(mem, root, time).unwrap();
         kernel.register_base_syscalls().unwrap();
 
         let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
@@ -36,7 +38,8 @@ fn benchmark_syscall_error_logging(c: &mut Criterion) {
     c.bench_function("syscall_error_logging_disabled", |b| {
         let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
         let root = PathBuf::from("./roms");
-        let mut kernel = Kernel::new(mem, root).unwrap();
+        let time = StdTimeProvider::new();
+        let mut kernel = Kernel::new(mem, root, time).unwrap();
         kernel.register_base_syscalls().unwrap();
 
         let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();
@@ -59,7 +62,8 @@ fn benchmark_memory_stats_syscall(c: &mut Criterion) {
     c.bench_function("sys_perf_mem_stats", |b| {
         let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
         let root = PathBuf::from("./roms");
-        let mut kernel = Kernel::new(mem, root).unwrap();
+        let time = StdTimeProvider::new();
+        let mut kernel = Kernel::new(mem, root, time).unwrap();
         kernel.register_base_syscalls().unwrap();
 
         let pid = kernel.spawn_proc(DisplayWindow::headless(), 1).unwrap();

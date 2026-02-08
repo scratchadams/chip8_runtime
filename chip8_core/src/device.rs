@@ -110,4 +110,30 @@ pub mod device {
         /// Read data from physical memory at the given address.
         fn read(&mut self, addr: usize, len: usize) -> Result<Vec<u8>, AllocError>;
     }
+
+    /// Time provider abstraction for timing and throttling.
+    ///
+    /// Enables different timing implementations:
+    /// - StdTimeProvider: Uses std::time::Instant and thread::sleep (std targets)
+    /// - CycleTimeProvider: Uses CPU cycle counters and busy-wait (no_std embedded)
+    /// - InterruptTimeProvider: Uses timer interrupts (QEMU/bare-metal)
+    ///
+    /// Used for:
+    /// - Per-process execution throttling (target_ips enforcement)
+    /// - Batched timing measurements (once per timeslice, not per instruction)
+    /// - Cross-platform timing abstraction for QEMU portability
+    pub trait TimeProvider {
+        /// Get elapsed nanoseconds since last reset (or provider creation).
+        /// Returns time in nanoseconds for consistent cross-platform behavior.
+        fn elapsed_nanos(&self) -> u64;
+
+        /// Reset the time measurement point to now.
+        /// Subsequent calls to elapsed_nanos() measure from this point.
+        fn reset(&mut self);
+
+        /// Wait (busy-wait or sleep) for the specified number of nanoseconds.
+        /// std: Uses thread::sleep() for efficient waiting.
+        /// no_std: Uses busy-wait loop on cycle counter.
+        fn wait_nanos(&self, nanos: u64);
+    }
 }

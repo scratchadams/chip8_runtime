@@ -1,11 +1,9 @@
 pub mod kernel {
     use std::collections::{HashMap, HashSet, VecDeque};
     use std::fs;
-    use std::io::{self, Error, ErrorKind, Read, Write};
+    use std::io::{self, Error, ErrorKind, Read};
     use std::path::{Component, Path, PathBuf};
     use std::sync::{Arc, Mutex};
-    use std::thread;
-    use std::time::{Duration, Instant};
 
     use crate::display::display::{DisplayMode, DisplayWindow};
     use crate::proc::proc::{ConsoleMode, Context, InputMode, Proc};
@@ -14,6 +12,7 @@ pub mod kernel {
     pub use chip8_core::syscall::syscall::SyscallOutcome;
     use chip8_core::device::device::{
         DisplayDevice, FsDevice, FsEntry, FsEntryKind, FsError, InputDevice, InputError,
+        TimeProvider,
     };
 
     const SYS_SPAWN: u16 = 0x0101;
@@ -158,17 +157,17 @@ pub mod kernel {
         );
     }
 
-    pub type SyscallHandler =
-        Arc<dyn Fn(&mut Kernel, u32, &mut Proc) -> SyscallOutcome + Send + Sync>;
+    pub type SyscallHandler<T> =
+        Arc<dyn Fn(&mut Kernel<T>, u32, &mut Proc) -> SyscallOutcome + Send + Sync>;
 
-    pub struct SyscallTable {
-        handlers: HashMap<u16, SyscallHandler>,
+    pub struct SyscallTable<T: TimeProvider + 'static> {
+        handlers: HashMap<u16, SyscallHandler<T>>,
     }
 
-    impl SyscallTable {
+    impl<T: TimeProvider + 'static> SyscallTable<T> {
         /// create an empty syscall table with no registered IDs.
         /// Example: `let table = SyscallTable::new();`
-        pub fn new() -> SyscallTable {
+        pub fn new() -> SyscallTable<T> {
             SyscallTable {
                 handlers: HashMap::new(),
             }
@@ -177,7 +176,7 @@ pub mod kernel {
         /// register a syscall handler in the reserved ID range (0x0100..0x01FF).
         pub fn register<H>(&mut self, id: u16, handler: H) -> Result<(), Error>
         where
-            H: Fn(&mut Kernel, u32, &mut Proc) -> SyscallOutcome + Send + Sync + 'static,
+            H: Fn(&mut Kernel<T>, u32, &mut Proc) -> SyscallOutcome + Send + Sync + 'static,
         {
             if !(0x0100..0x0200).contains(&id) {
                 return Err(Error::new(ErrorKind::InvalidInput, "syscall id out of range"));
@@ -187,7 +186,7 @@ pub mod kernel {
         }
 
         /// look up a handler by syscall ID without executing it.
-        pub fn handler(&self, id: u16) -> Option<SyscallHandler> {
+        pub fn handler(&self, id: u16) -> Option<SyscallHandler<T>> {
             self.handlers.get(&id).cloned()
         }
     }
@@ -318,7 +317,6 @@ pub mod kernel {
         exit_code: Option<u8>,
         waiting_for: Option<WaitTarget>,
         timing: TimingConfig,
-        last_throttle: Instant,  // For target_ips throttling
     }
 
     pub struct ProcGuard<'a> {
@@ -350,9 +348,9 @@ pub mod kernel {
         next_fd: u8,
     }
 
-    pub struct Kernel {
+    pub struct Kernel<T: TimeProvider + 'static> {
         mem: Arc<Mutex<SharedMemory>>,
-        syscalls: SyscallTable,
+        syscalls: SyscallTable<T>,
         procs: HashMap<u32, ProcEntry>,
         fd_tables: HashMap<u32, FdTable>,
         next_pid: u32,
@@ -361,7 +359,8 @@ pub mod kernel {
         pending_exit: HashMap<u32, u8>,
         pending_block: HashMap<u32, WaitTarget>,
         pending_timing: HashMap<u32, TimingConfig>,
-        last_timer_tick: Instant,
+        time: T,
+        timer_last_nanos: u64,  // Last timer reading for 60Hz tick calculation
         timeslice_steps: u32,
         scheduler: Box<dyn SchedulerPolicy>,
         trace: TraceBuffer,
@@ -416,9 +415,9 @@ pub mod kernel {
         }
     }
 
-    impl Kernel {
+    impl<T: TimeProvider + 'static> Kernel<T> {
         /// build a kernel with shared memory and an empty syscall registry.
-        pub fn new(mem: Arc<Mutex<SharedMemory>>, root_dir: PathBuf) -> Result<Kernel, Error> {
+        pub fn new(mem: Arc<Mutex<SharedMemory>>, root_dir: PathBuf, time: T) -> Result<Kernel<T>, Error> {
             let root = root_dir
                 .canonicalize()
                 .map_err(|e| Error::new(ErrorKind::InvalidInput, format!("invalid root dir: {e}")))?;
@@ -434,7 +433,8 @@ pub mod kernel {
                 pending_exit: HashMap::new(),
                 pending_block: HashMap::new(),
                 pending_timing: HashMap::new(),
-                last_timer_tick: Instant::now(),
+                time,
+                timer_last_nanos: 0,
                 timeslice_steps: DEFAULT_TIMESLICE_STEPS,
                 scheduler: Box::new(RoundRobinScheduler::default()),
                 trace: TraceBuffer::new(TRACE_DEFAULT_CAPACITY),
@@ -471,7 +471,7 @@ pub mod kernel {
         /// register a syscall handler on the shared registry.
         pub fn register_syscall<H>(&mut self, id: u16, handler: H) -> Result<(), Error>
         where
-            H: Fn(&mut Kernel, u32, &mut Proc) -> SyscallOutcome + Send + Sync + 'static,
+            H: Fn(&mut Kernel<T>, u32, &mut Proc) -> SyscallOutcome + Send + Sync + 'static,
         {
             self.syscalls.register(id, handler)
         }
@@ -527,7 +527,6 @@ pub mod kernel {
                     exit_code: None,
                     waiting_for: None,
                     timing: TimingConfig::default(),
-                    last_throttle: Instant::now(),
                 },
             );
             self.fd_tables.insert(
@@ -787,10 +786,13 @@ pub mod kernel {
                 self.timeslice_steps.max(1)
             };
 
+            // Record start time for batched throttling measurement
+            let start_nanos = self.time.elapsed_nanos();
+
             let mut steps = 0u32;
-            loop {
+            let reason = loop {
                 if steps >= slice {
-                    return Ok(ScheduleReason::Preempted);
+                    break ScheduleReason::Preempted;
                 }
                 steps = steps.saturating_add(1);
                 let mut entry = self
@@ -799,17 +801,7 @@ pub mod kernel {
                     .ok_or_else(|| Error::new(ErrorKind::NotFound, "pid not found"))?;
                 if entry.state != ProcState::Running {
                     self.procs.insert(pid, entry);
-                    return Ok(ScheduleReason::Blocked);
-                }
-
-                // Apply per-instruction throttling if target_ips is set (legacy mode)
-                if entry.timing.target_ips > 0 {
-                    let target_interval = Duration::from_nanos(1_000_000_000 / entry.timing.target_ips as u64);
-                    let elapsed = entry.last_throttle.elapsed();
-                    if elapsed < target_interval {
-                        thread::sleep(target_interval - elapsed);
-                    }
-                    entry.last_throttle = Instant::now();
+                    break ScheduleReason::Blocked;
                 }
 
                 entry.proc.restore_context(&entry.context);
@@ -824,7 +816,7 @@ pub mod kernel {
 
                 self.apply_pending(pid, &mut entry, outcome);
                 entry.context = entry.proc.context();
-                let reason = match entry.state {
+                let exit_reason = match entry.state {
                     ProcState::Exited => Some(ScheduleReason::Exited),
                     ProcState::Blocked => Some(ScheduleReason::Blocked),
                     ProcState::Running => {
@@ -836,10 +828,24 @@ pub mod kernel {
                     }
                 };
                 self.procs.insert(pid, entry);
-                if let Some(reason) = reason {
-                    return Ok(reason);
+                if let Some(r) = exit_reason {
+                    break r;
+                }
+            };
+
+            // Apply batched throttling if target_ips is set
+            // This runs once per timeslice instead of per instruction (~1000x more efficient)
+            if entry_timing.target_ips > 0 && steps > 0 {
+                let end_nanos = self.time.elapsed_nanos();
+                let elapsed_nanos = end_nanos - start_nanos;
+                // Use 64-bit arithmetic throughout to avoid truncation
+                let target_nanos = (steps as u64 * 1_000_000_000u64) / entry_timing.target_ips as u64;
+                if elapsed_nanos < target_nanos {
+                    self.time.wait_nanos(target_nanos - elapsed_nanos);
                 }
             }
+
+            Ok(reason)
         }
 
         fn next_runnable_pid(&mut self) -> Option<u32> {
@@ -902,14 +908,19 @@ pub mod kernel {
         }
 
         fn timer_ticks(&mut self) -> u32 {
-            let tick = Duration::from_micros(1_000_000 / 60);
-            let elapsed = self.last_timer_tick.elapsed();
-            if elapsed < tick {
+            // Timer tick occurs at 60Hz (every 16.666... ms)
+            const TICK_NANOS: u64 = 1_000_000_000 / 60;
+
+            let current_nanos = self.time.elapsed_nanos();
+            let elapsed_nanos = current_nanos - self.timer_last_nanos;
+
+            if elapsed_nanos < TICK_NANOS {
                 return 0;
             }
 
-            let ticks = (elapsed.as_nanos() / tick.as_nanos()) as u32;
-            self.last_timer_tick = self.last_timer_tick + (tick * ticks);
+            let ticks = (elapsed_nanos / TICK_NANOS) as u32;
+            // Advance timer by the exact amount of ticks, preserving remainder
+            self.timer_last_nanos += ticks as u64 * TICK_NANOS;
             ticks
         }
 
@@ -1183,7 +1194,7 @@ pub mod kernel {
             Ok(out)
         }
 
-        fn fs_open_path(&mut self, pid: u32, path: &str, flags: u16) -> Result<u8, FsError> {
+        fn fs_open_path(&mut self, pid: u32, path: &str, _flags: u16) -> Result<u8, FsError> {
             let file_path = self
                 .resolve_fs_path(path)
                 .map_err(|err| if err.kind() == ErrorKind::NotFound { FsError::NotFound } else { FsError::Path })?;
@@ -1384,8 +1395,8 @@ pub mod kernel {
         }
     }
 
-    fn sys_spawn(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let name_ptr = match Kernel::syscall_arg(proc, 0) {
+    fn sys_spawn<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let name_ptr = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_SPAWN, ERR_INVALID, "syscall frame too small for name_ptr");
@@ -1394,7 +1405,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let name_len = match Kernel::syscall_arg(proc, 1) {
+        let name_len = match Kernel::<T>::syscall_arg(proc, 1) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_SPAWN, ERR_INVALID, "syscall frame too small for name_len");
@@ -1403,7 +1414,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let pages = Kernel::syscall_arg(proc, 2).unwrap_or(1);
+        let pages = Kernel::<T>::syscall_arg(proc, 2).unwrap_or(1);
         let name_bytes = match proc.read_bytes(name_ptr as u32, name_len as usize) {
             Ok(val) => val,
             Err(_) => {
@@ -1446,15 +1457,15 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_exit(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let code = Kernel::syscall_arg(proc, 0).unwrap_or(0) as u8;
+    fn sys_exit<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let code = Kernel::<T>::syscall_arg(proc, 0).unwrap_or(0) as u8;
         kernel.pending_exit.insert(pid, code);
         proc.regs.V[0xF] = 0;
         SyscallOutcome::Completed
     }
 
-    fn sys_wait(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let target = match Kernel::syscall_arg(proc, 0) {
+    fn sys_wait<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let target = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val as u32,
             Err(_) => {
                 log_syscall_error(pid, SYS_WAIT, ERR_INVALID, "syscall frame too small for target pid");
@@ -1483,13 +1494,13 @@ pub mod kernel {
         SyscallOutcome::Blocked
     }
 
-    fn sys_yield(_kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+    fn sys_yield<T: TimeProvider + 'static>(_kernel: &mut Kernel<T>, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
         proc.regs.V[0xF] = 0;
         SyscallOutcome::Yielded
     }
 
-    fn sys_write(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let buf = match Kernel::syscall_arg(proc, 0) {
+    fn sys_write<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let buf = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_WRITE, ERR_INVALID, "syscall frame too small for buf");
@@ -1498,7 +1509,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let len = match Kernel::syscall_arg(proc, 1) {
+        let len = match Kernel::<T>::syscall_arg(proc, 1) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_WRITE, ERR_INVALID, "syscall frame too small for len");
@@ -1540,8 +1551,8 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_read(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let buf = match Kernel::syscall_arg(proc, 0) {
+    fn sys_read<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let buf = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_READ, ERR_INVALID, "syscall frame too small for buf");
@@ -1550,7 +1561,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let len = match Kernel::syscall_arg(proc, 1) {
+        let len = match Kernel::<T>::syscall_arg(proc, 1) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_READ, ERR_INVALID, "syscall frame too small for len");
@@ -1565,14 +1576,14 @@ pub mod kernel {
         match mode {
             InputMode::Line => {
                 if proc.console_mode == ConsoleMode::Display {
-                    let Some(newline_idx) = Kernel::find_newline_in(&proc.console_input) else {
+                    let Some(newline_idx) = Kernel::<T>::find_newline_in(&proc.console_input) else {
                         kernel
                             .pending_block
                             .insert(pid, WaitTarget::Read { buf, len, mode });
                         return SyscallOutcome::Blocked;
                     };
                     let count = (len as usize).min(newline_idx + 1);
-                    let data = Kernel::pop_input(&mut proc.console_input, count);
+                    let data = Kernel::<T>::pop_input(&mut proc.console_input, count);
                     if proc.write_bytes(buf as u32, &data).is_err() {
                         log_syscall_error(pid, SYS_READ, ERR_INVALID, "buffer write failed (out of bounds)");
                         proc.regs.V[0] = ERR_INVALID;
@@ -1594,14 +1605,14 @@ pub mod kernel {
                     return SyscallOutcome::Completed;
                 }
 
-                let Some(newline_idx) = Kernel::find_newline_in(&kernel.input) else {
+                let Some(newline_idx) = Kernel::<T>::find_newline_in(&kernel.input) else {
                     kernel
                         .pending_block
                         .insert(pid, WaitTarget::Read { buf, len, mode });
                     return SyscallOutcome::Blocked;
                 };
                 let count = (len as usize).min(newline_idx + 1);
-                let data = Kernel::pop_input(&mut kernel.input, count);
+                let data = Kernel::<T>::pop_input(&mut kernel.input, count);
                 if proc.write_bytes(buf as u32, &data).is_err() {
                     log_syscall_error(pid, SYS_READ, ERR_INVALID, "buffer write failed (out of bounds)");
                     proc.regs.V[0] = ERR_INVALID;
@@ -1621,7 +1632,7 @@ pub mod kernel {
                         return SyscallOutcome::Blocked;
                     }
                     let count = (len as usize).min(proc.console_input.len());
-                    let data = Kernel::pop_input(&mut proc.console_input, count);
+                    let data = Kernel::<T>::pop_input(&mut proc.console_input, count);
                     if proc.write_bytes(buf as u32, &data).is_err() {
                         log_syscall_error(pid, SYS_READ, ERR_INVALID, "buffer write failed (out of bounds)");
                         proc.regs.V[0] = ERR_INVALID;
@@ -1650,7 +1661,7 @@ pub mod kernel {
                     return SyscallOutcome::Blocked;
                 }
                 let count = (len as usize).min(kernel.input.len());
-                let data = Kernel::pop_input(&mut kernel.input, count);
+                let data = Kernel::<T>::pop_input(&mut kernel.input, count);
                 if proc.write_bytes(buf as u32, &data).is_err() {
                     log_syscall_error(pid, SYS_READ, ERR_INVALID, "buffer write failed (out of bounds)");
                     proc.regs.V[0] = ERR_INVALID;
@@ -1664,8 +1675,8 @@ pub mod kernel {
         }
     }
 
-    fn sys_input_mode(_kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let mode = match Kernel::syscall_arg(proc, 0) {
+    fn sys_input_mode<T: TimeProvider + 'static>(_kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let mode = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(0) => InputMode::Line,
             Ok(1) => InputMode::Byte,
             Ok(_) => {
@@ -1687,8 +1698,8 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_console_mode(_kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let mode = match Kernel::syscall_arg(proc, 0) {
+    fn sys_console_mode<T: TimeProvider + 'static>(_kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let mode = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(0) => ConsoleMode::Host,
             Ok(1) => ConsoleMode::Display,
             Ok(_) => {
@@ -1719,8 +1730,8 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_fs_list(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let path_ptr = match Kernel::syscall_arg(proc, 0) {
+    fn sys_fs_list<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let path_ptr = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_FS_LIST, ERR_INVALID, "syscall frame too small for path_ptr");
@@ -1729,7 +1740,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let path_len = match Kernel::syscall_arg(proc, 1) {
+        let path_len = match Kernel::<T>::syscall_arg(proc, 1) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_FS_LIST, ERR_INVALID, "syscall frame too small for path_len");
@@ -1738,7 +1749,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let out_ptr = match Kernel::syscall_arg(proc, 2) {
+        let out_ptr = match Kernel::<T>::syscall_arg(proc, 2) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_FS_LIST, ERR_INVALID, "syscall frame too small for out_ptr");
@@ -1747,7 +1758,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let max_entries = match Kernel::syscall_arg(proc, 3) {
+        let max_entries = match Kernel::<T>::syscall_arg(proc, 3) {
             Ok(val) => val as usize,
             Err(_) => {
                 log_syscall_error(pid, SYS_FS_LIST, ERR_INVALID, "syscall frame too small for max_entries");
@@ -1770,7 +1781,7 @@ pub mod kernel {
         let entries = match kernel.fs_list_entries(&path_str, max_entries) {
             Ok(val) => val,
             Err(err) => {
-                let code = Kernel::fs_error_to_code(err);
+                let code = Kernel::<T>::fs_error_to_code(err);
                 log_syscall_error(pid, SYS_FS_LIST, code, "directory listing failed");
                 proc.regs.V[0] = code;
                 proc.regs.V[0xF] = 1;
@@ -1807,8 +1818,8 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_fs_open(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let path_ptr = match Kernel::syscall_arg(proc, 0) {
+    fn sys_fs_open<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let path_ptr = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_FS_OPEN, ERR_INVALID, "syscall frame too small for path_ptr");
@@ -1817,7 +1828,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let path_len = match Kernel::syscall_arg(proc, 1) {
+        let path_len = match Kernel::<T>::syscall_arg(proc, 1) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_FS_OPEN, ERR_INVALID, "syscall frame too small for path_len");
@@ -1826,7 +1837,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let flags = Kernel::syscall_arg(proc, 2).unwrap_or(0);
+        let flags = Kernel::<T>::syscall_arg(proc, 2).unwrap_or(0);
 
         let path_bytes = match proc.read_bytes(path_ptr as u32, path_len as usize) {
             Ok(val) => val,
@@ -1841,7 +1852,7 @@ pub mod kernel {
         let fd = match kernel.fs_open_path(pid, &path_str, flags) {
             Ok(val) => val,
             Err(err) => {
-                let code = Kernel::fs_error_to_code(err);
+                let code = Kernel::<T>::fs_error_to_code(err);
                 log_syscall_error(pid, SYS_FS_OPEN, code, "file open failed");
                 proc.regs.V[0] = code;
                 proc.regs.V[0xF] = 1;
@@ -1854,8 +1865,8 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_fs_read(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let fd = match Kernel::syscall_arg(proc, 0) {
+    fn sys_fs_read<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let fd = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val as u8,
             Err(_) => {
                 log_syscall_error(pid, SYS_FS_READ, ERR_INVALID, "syscall frame too small for fd");
@@ -1864,7 +1875,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let buf = match Kernel::syscall_arg(proc, 1) {
+        let buf = match Kernel::<T>::syscall_arg(proc, 1) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_FS_READ, ERR_INVALID, "syscall frame too small for buf");
@@ -1873,7 +1884,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let len = match Kernel::syscall_arg(proc, 2) {
+        let len = match Kernel::<T>::syscall_arg(proc, 2) {
             Ok(val) => val as usize,
             Err(_) => {
                 log_syscall_error(pid, SYS_FS_READ, ERR_INVALID, "syscall frame too small for len");
@@ -1886,7 +1897,7 @@ pub mod kernel {
         let data = match kernel.fs_read_fd(pid, fd, len) {
             Ok(val) => val,
             Err(err) => {
-                let code = Kernel::fs_error_to_code(err);
+                let code = Kernel::<T>::fs_error_to_code(err);
                 log_syscall_error(pid, SYS_FS_READ, code, "file read failed");
                 proc.regs.V[0] = code;
                 proc.regs.V[0xF] = 1;
@@ -1905,8 +1916,8 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_fs_close(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let fd = match Kernel::syscall_arg(proc, 0) {
+    fn sys_fs_close<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let fd = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val as u8,
             Err(_) => {
                 log_syscall_error(pid, SYS_FS_CLOSE, ERR_INVALID, "syscall frame too small for fd");
@@ -1916,7 +1927,7 @@ pub mod kernel {
             }
         };
         if let Err(err) = kernel.fs_close_fd(pid, fd) {
-            let code = Kernel::fs_error_to_code(err);
+            let code = Kernel::<T>::fs_error_to_code(err);
             log_syscall_error(pid, SYS_FS_CLOSE, code, "file close failed");
             proc.regs.V[0] = code;
             proc.regs.V[0xF] = 1;
@@ -1927,8 +1938,8 @@ pub mod kernel {
     }
 
     #[cfg(feature = "fs_write")]
-    fn sys_fs_write(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let fd = match Kernel::syscall_arg(proc, 0) {
+    fn sys_fs_write<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let fd = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val as u8,
             Err(_) => {
                 log_syscall_error(pid, SYS_FS_WRITE, ERR_INVALID, "syscall frame too small for fd");
@@ -1937,7 +1948,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let buf = match Kernel::syscall_arg(proc, 1) {
+        let buf = match Kernel::<T>::syscall_arg(proc, 1) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_FS_WRITE, ERR_INVALID, "syscall frame too small for buf");
@@ -1946,7 +1957,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let len = match Kernel::syscall_arg(proc, 2) {
+        let len = match Kernel::<T>::syscall_arg(proc, 2) {
             Ok(val) => val as usize,
             Err(_) => {
                 log_syscall_error(pid, SYS_FS_WRITE, ERR_INVALID, "syscall frame too small for len");
@@ -1972,7 +1983,7 @@ pub mod kernel {
                 proc.regs.V[0xF] = 0;
             }
             Err(err) => {
-                let code = Kernel::fs_error_to_code(err);
+                let code = Kernel::<T>::fs_error_to_code(err);
                 log_syscall_error(pid, SYS_FS_WRITE, code, "file write failed");
                 proc.regs.V[0] = code;
                 proc.regs.V[0xF] = 1;
@@ -1981,8 +1992,8 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_dbg_list(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let out_ptr = match Kernel::syscall_arg(proc, 0) {
+    fn sys_dbg_list<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let out_ptr = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_DBG_LIST, ERR_INVALID, "syscall frame too small for out_ptr");
@@ -1991,7 +2002,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let max_entries = match Kernel::syscall_arg(proc, 1) {
+        let max_entries = match Kernel::<T>::syscall_arg(proc, 1) {
             Ok(val) => val as usize,
             Err(_) => {
                 log_syscall_error(pid, SYS_DBG_LIST, ERR_INVALID, "syscall frame too small for max_entries");
@@ -2037,8 +2048,8 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_dbg_regs(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let target_pid = match Kernel::syscall_arg(proc, 0) {
+    fn sys_dbg_regs<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let target_pid = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val as u32,
             Err(_) => {
                 log_syscall_error(pid, SYS_DBG_REGS, ERR_INVALID, "syscall frame too small for target_pid");
@@ -2047,7 +2058,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let out_ptr = match Kernel::syscall_arg(proc, 1) {
+        let out_ptr = match Kernel::<T>::syscall_arg(proc, 1) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_DBG_REGS, ERR_INVALID, "syscall frame too small for out_ptr");
@@ -2087,8 +2098,8 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_dbg_mem_read(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let target_pid = match Kernel::syscall_arg(proc, 0) {
+    fn sys_dbg_mem_read<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let target_pid = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val as u32,
             Err(_) => {
                 log_syscall_error(pid, SYS_DBG_MEM_READ, ERR_INVALID, "syscall frame too small for target_pid");
@@ -2097,7 +2108,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let addr = match Kernel::syscall_arg(proc, 1) {
+        let addr = match Kernel::<T>::syscall_arg(proc, 1) {
             Ok(val) => val as u32,
             Err(_) => {
                 log_syscall_error(pid, SYS_DBG_MEM_READ, ERR_INVALID, "syscall frame too small for addr");
@@ -2106,7 +2117,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let len = match Kernel::syscall_arg(proc, 2) {
+        let len = match Kernel::<T>::syscall_arg(proc, 2) {
             Ok(val) => val as usize,
             Err(_) => {
                 log_syscall_error(pid, SYS_DBG_MEM_READ, ERR_INVALID, "syscall frame too small for len");
@@ -2115,7 +2126,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let out_ptr = match Kernel::syscall_arg(proc, 3) {
+        let out_ptr = match Kernel::<T>::syscall_arg(proc, 3) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_DBG_MEM_READ, ERR_INVALID, "syscall frame too small for out_ptr");
@@ -2155,8 +2166,8 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_dbg_mem_write(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let target_pid = match Kernel::syscall_arg(proc, 0) {
+    fn sys_dbg_mem_write<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let target_pid = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val as u32,
             Err(_) => {
                 log_syscall_error(pid, SYS_DBG_MEM_WRITE, ERR_INVALID, "syscall frame too small for target_pid");
@@ -2165,7 +2176,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let addr = match Kernel::syscall_arg(proc, 1) {
+        let addr = match Kernel::<T>::syscall_arg(proc, 1) {
             Ok(val) => val as u32,
             Err(_) => {
                 log_syscall_error(pid, SYS_DBG_MEM_WRITE, ERR_INVALID, "syscall frame too small for addr");
@@ -2174,7 +2185,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let len = match Kernel::syscall_arg(proc, 2) {
+        let len = match Kernel::<T>::syscall_arg(proc, 2) {
             Ok(val) => val as usize,
             Err(_) => {
                 log_syscall_error(pid, SYS_DBG_MEM_WRITE, ERR_INVALID, "syscall frame too small for len");
@@ -2183,7 +2194,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let in_ptr = match Kernel::syscall_arg(proc, 3) {
+        let in_ptr = match Kernel::<T>::syscall_arg(proc, 3) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_DBG_MEM_WRITE, ERR_INVALID, "syscall frame too small for in_ptr");
@@ -2223,8 +2234,8 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_dbg_trace_read(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let out_ptr = match Kernel::syscall_arg(proc, 0) {
+    fn sys_dbg_trace_read<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let out_ptr = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_DBG_TRACE_READ, ERR_INVALID, "syscall frame too small for out_ptr");
@@ -2233,7 +2244,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let max_records = match Kernel::syscall_arg(proc, 1) {
+        let max_records = match Kernel::<T>::syscall_arg(proc, 1) {
             Ok(val) => val as usize,
             Err(_) => {
                 log_syscall_error(pid, SYS_DBG_TRACE_READ, ERR_INVALID, "syscall frame too small for max_records");
@@ -2268,8 +2279,8 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_perf_mem_stats(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let out_ptr = match Kernel::syscall_arg(proc, 0) {
+    fn sys_perf_mem_stats<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let out_ptr = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_PERF_MEM_STATS, ERR_INVALID, "syscall frame too small for out_ptr");
@@ -2320,8 +2331,8 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_perf_proc_info(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let target_pid = match Kernel::syscall_arg(proc, 0) {
+    fn sys_perf_proc_info<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let target_pid = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val as u32,
             Err(_) => {
                 log_syscall_error(pid, SYS_PERF_PROC_INFO, ERR_INVALID, "syscall frame too small for target_pid");
@@ -2330,7 +2341,7 @@ pub mod kernel {
                 return SyscallOutcome::Completed;
             }
         };
-        let out_ptr = match Kernel::syscall_arg(proc, 1) {
+        let out_ptr = match Kernel::<T>::syscall_arg(proc, 1) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_PERF_PROC_INFO, ERR_INVALID, "syscall frame too small for out_ptr");
@@ -2414,8 +2425,8 @@ pub mod kernel {
     ///   - timer_hz_low: 1 byte (combined: 0 = use kernel default 60Hz)
     ///
     /// Error codes: ERR_INVALID, ERR_NOT_FOUND
-    fn sys_set_timing(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
-        let target_pid = match Kernel::syscall_arg(proc, 0) {
+    fn sys_set_timing<T: TimeProvider + 'static>(kernel: &mut Kernel<T>, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let target_pid = match Kernel::<T>::syscall_arg(proc, 0) {
             Ok(val) => val as u32,
             Err(_) => {
                 log_syscall_error(pid, SYS_SET_TIMING, ERR_INVALID, "syscall frame too small for target_pid");
@@ -2425,7 +2436,7 @@ pub mod kernel {
             }
         };
 
-        let timeslice_steps = match Kernel::syscall_arg(proc, 1) {
+        let timeslice_steps = match Kernel::<T>::syscall_arg(proc, 1) {
             Ok(val) => val as u32,
             Err(_) => {
                 log_syscall_error(pid, SYS_SET_TIMING, ERR_INVALID, "syscall frame too small for timeslice_steps");
@@ -2435,7 +2446,7 @@ pub mod kernel {
             }
         };
 
-        let target_ips = match Kernel::syscall_arg(proc, 2) {
+        let target_ips = match Kernel::<T>::syscall_arg(proc, 2) {
             Ok(val) => val as u32,
             Err(_) => {
                 log_syscall_error(pid, SYS_SET_TIMING, ERR_INVALID, "syscall frame too small for target_ips");
@@ -2445,7 +2456,7 @@ pub mod kernel {
             }
         };
 
-        let timer_hz = match Kernel::syscall_arg(proc, 3) {
+        let timer_hz = match Kernel::<T>::syscall_arg(proc, 3) {
             Ok(val) => val,
             Err(_) => {
                 log_syscall_error(pid, SYS_SET_TIMING, ERR_INVALID, "syscall frame too small for timer_hz");
@@ -2487,9 +2498,9 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    impl InputDevice for Kernel {
+    impl<T: TimeProvider + 'static> InputDevice for Kernel<T> {
         fn push_input(&mut self, data: &[u8]) {
-            Kernel::push_input(self, data);
+            Kernel::<T>::push_input(self, data);
         }
 
         fn blocking_read_line(&mut self) -> Result<(), InputError> {
@@ -2509,7 +2520,7 @@ pub mod kernel {
         }
     }
 
-    impl FsDevice for Kernel {
+    impl<T: TimeProvider + 'static> FsDevice for Kernel<T> {
         fn list(&mut self, path: &str, max_entries: usize) -> Result<Vec<FsEntry>, FsError> {
             self.fs_list_entries(path, max_entries)
         }

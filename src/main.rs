@@ -4,9 +4,11 @@ mod chip8_engine;
 mod proc;
 mod display;
 mod kernel;
+mod timing;
 
 use kernel::kernel::Kernel;
 use shared_memory::shared_memory::SharedMemory;
+use timing::timing::StdTimeProvider;
 use std::sync::{Arc, Mutex};
 
 use std::env;
@@ -36,7 +38,8 @@ fn main() {
 
     // Allocate system memory.
     let mem = Arc::new(Mutex::new(SharedMemory::new().unwrap()));
-    let mut kernel = Kernel::new(mem, root_dir).unwrap();
+    let time = StdTimeProvider::new();
+    let mut kernel = Kernel::new(mem, root_dir, time).unwrap();
     kernel.register_base_syscalls().unwrap();
 
     for rom in roms {
