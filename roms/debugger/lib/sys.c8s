@@ -189,4 +189,11 @@ section code {
     sys 0x0132
     return
   }
+
+  label sys_set_timing {
+    call frame4
+    i := FRAME
+    sys 0x0142
+    return
+  }
 }
