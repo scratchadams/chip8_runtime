@@ -284,6 +284,16 @@ pub mod shared_memory {
 
             Ok(data)
         }
+
+        /// Get the number of used pages by counting bitmap entries
+        pub fn used_pages(&self) -> usize {
+            self.phys_bitmap.iter().filter(|&&used| used).count()
+        }
+
+        /// Get the number of free regions (fragmentation indicator)
+        pub fn free_regions(&self) -> usize {
+            self.free_list.len()
+        }
     }
 
     /// Implement MemoryAllocator trait for SharedMemory.

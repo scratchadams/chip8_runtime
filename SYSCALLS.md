@@ -44,25 +44,51 @@ Arguments are 16-bit big-endian values. The kernel reads args by index:
 
 ## 3) Error Conventions
 
+### VF Register Contract
+
+**All syscall handlers MUST set the VF register (V[0xF]) on every code path.**
+
+This contract is critical for reliable trace error reporting and syscall observability.
+
+**Success Path:**
+```rust
+proc.regs.V[0] = result_value;  // Return value (bytes written, PID, etc.)
+proc.regs.V[0xF] = 0;           // Success flag (REQUIRED)
+SyscallOutcome::Completed
 ```
-VF = 0  => success
-VF = 1  => failure
-V0 may contain a numeric error code when VF=1
+
+**Error Path:**
+```rust
+proc.regs.V[0] = ERROR_CODE;    // Specific error code (see below)
+proc.regs.V[0xF] = 1;           // Error flag (REQUIRED)
+return SyscallOutcome::Completed;
 ```
+
+**Blocked Path (sys_wait, sys_read):**
+When a syscall blocks, VF is set when the syscall is unblocked:
+```rust
+// On unblock:
+entry.proc.regs.V[0] = result_value;
+entry.proc.regs.V[0xF] = 0;      // Set on successful unblock
+```
+
+### Error Codes
 
 Error codes currently in use:
 
 ```
-0x02 = invalid argument
-0x03 = I/O failure
-0x04 = not found
-0x05 = not a directory
-0x06 = is a directory
-0x07 = name too long
-0x08 = too many open files
-0x09 = invalid path
-0x0A = stack overflow/underflow
+0x02 (ERR_INVALID)        = invalid argument or frame too small
+0x03 (ERR_IO)             = I/O failure (host write/read)
+0x04 (ERR_NOT_FOUND)      = resource not found (file, PID, etc.)
+0x05 (ERR_NOT_DIR)        = not a directory
+0x06 (ERR_IS_DIR)         = is a directory (when file expected)
+0x07 (ERR_NAME_TOO_LONG)  = filename exceeds 64 bytes
+0x08 (ERR_TOO_MANY_OPEN)  = file descriptor table full
+0x09 (ERR_PATH)           = invalid path or path resolution failed
+0x0A (ERR_STACK)          = stack overflow/underflow
 ```
+
+**Contract Audit (Week 4):** All 18 syscall handlers have been audited and verified compliant with the VF contract. See Week 4 completion notes in MEMORY.md.
 
 ---
 

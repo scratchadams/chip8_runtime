@@ -34,6 +34,8 @@ pub mod kernel {
     const SYS_DBG_MEM_READ: u16 = 0x0132;
     const SYS_DBG_MEM_WRITE: u16 = 0x0133;
     const SYS_DBG_TRACE_READ: u16 = 0x0134;
+    const SYS_PERF_MEM_STATS: u16 = 0x0140;
+    const SYS_PERF_PROC_INFO: u16 = 0x0141;
 
     const ERR_INVALID: u8 = 0x02;
     const ERR_IO: u8 = 0x03;
@@ -93,6 +95,8 @@ pub mod kernel {
             SYS_DBG_MEM_READ => "sys_dbg_mem_read",
             SYS_DBG_MEM_WRITE => "sys_dbg_mem_write",
             SYS_DBG_TRACE_READ => "sys_dbg_trace_read",
+            SYS_PERF_MEM_STATS => "sys_perf_mem_stats",
+            SYS_PERF_PROC_INFO => "sys_perf_proc_info",
             _ => "unknown",
         }
     }
@@ -424,6 +428,8 @@ pub mod kernel {
             self.register_syscall(SYS_DBG_MEM_READ, sys_dbg_mem_read)?;
             self.register_syscall(SYS_DBG_MEM_WRITE, sys_dbg_mem_write)?;
             self.register_syscall(SYS_DBG_TRACE_READ, sys_dbg_trace_read)?;
+            self.register_syscall(SYS_PERF_MEM_STATS, sys_perf_mem_stats)?;
+            self.register_syscall(SYS_PERF_PROC_INFO, sys_perf_proc_info)?;
             Ok(())
         }
 
@@ -1652,10 +1658,11 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_fs_list(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+    fn sys_fs_list(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
         let path_ptr = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_FS_LIST, ERR_INVALID, "syscall frame too small for path_ptr");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1664,6 +1671,7 @@ pub mod kernel {
         let path_len = match Kernel::syscall_arg(proc, 1) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_FS_LIST, ERR_INVALID, "syscall frame too small for path_len");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1672,6 +1680,7 @@ pub mod kernel {
         let out_ptr = match Kernel::syscall_arg(proc, 2) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_FS_LIST, ERR_INVALID, "syscall frame too small for out_ptr");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1680,6 +1689,7 @@ pub mod kernel {
         let max_entries = match Kernel::syscall_arg(proc, 3) {
             Ok(val) => val as usize,
             Err(_) => {
+                log_syscall_error(pid, SYS_FS_LIST, ERR_INVALID, "syscall frame too small for max_entries");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1689,6 +1699,7 @@ pub mod kernel {
         let path_bytes = match proc.read_bytes(path_ptr as u32, path_len as usize) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_FS_LIST, ERR_INVALID, "path read failed (out of bounds)");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1698,7 +1709,9 @@ pub mod kernel {
         let entries = match kernel.fs_list_entries(&path_str, max_entries) {
             Ok(val) => val,
             Err(err) => {
-                proc.regs.V[0] = Kernel::fs_error_to_code(err);
+                let code = Kernel::fs_error_to_code(err);
+                log_syscall_error(pid, SYS_FS_LIST, code, "directory listing failed");
+                proc.regs.V[0] = code;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
             }
@@ -1721,6 +1734,7 @@ pub mod kernel {
 
             let addr = out_ptr as u32 + (count * DIR_ENTRY_SIZE) as u32;
             if proc.write_bytes(addr, &record).is_err() {
+                log_syscall_error(pid, SYS_FS_LIST, ERR_INVALID, "entry write failed (out of bounds)");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1736,6 +1750,7 @@ pub mod kernel {
         let path_ptr = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_FS_OPEN, ERR_INVALID, "syscall frame too small for path_ptr");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1744,6 +1759,7 @@ pub mod kernel {
         let path_len = match Kernel::syscall_arg(proc, 1) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_FS_OPEN, ERR_INVALID, "syscall frame too small for path_len");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1754,6 +1770,7 @@ pub mod kernel {
         let path_bytes = match proc.read_bytes(path_ptr as u32, path_len as usize) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_FS_OPEN, ERR_INVALID, "path read failed (out of bounds)");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1763,7 +1780,9 @@ pub mod kernel {
         let fd = match kernel.fs_open_path(pid, &path_str, flags) {
             Ok(val) => val,
             Err(err) => {
-                proc.regs.V[0] = Kernel::fs_error_to_code(err);
+                let code = Kernel::fs_error_to_code(err);
+                log_syscall_error(pid, SYS_FS_OPEN, code, "file open failed");
+                proc.regs.V[0] = code;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
             }
@@ -1778,6 +1797,7 @@ pub mod kernel {
         let fd = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val as u8,
             Err(_) => {
+                log_syscall_error(pid, SYS_FS_READ, ERR_INVALID, "syscall frame too small for fd");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1786,6 +1806,7 @@ pub mod kernel {
         let buf = match Kernel::syscall_arg(proc, 1) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_FS_READ, ERR_INVALID, "syscall frame too small for buf");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1794,6 +1815,7 @@ pub mod kernel {
         let len = match Kernel::syscall_arg(proc, 2) {
             Ok(val) => val as usize,
             Err(_) => {
+                log_syscall_error(pid, SYS_FS_READ, ERR_INVALID, "syscall frame too small for len");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1803,12 +1825,15 @@ pub mod kernel {
         let data = match kernel.fs_read_fd(pid, fd, len) {
             Ok(val) => val,
             Err(err) => {
-                proc.regs.V[0] = Kernel::fs_error_to_code(err);
+                let code = Kernel::fs_error_to_code(err);
+                log_syscall_error(pid, SYS_FS_READ, code, "file read failed");
+                proc.regs.V[0] = code;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
             }
         };
         if proc.write_bytes(buf as u32, &data).is_err() {
+            log_syscall_error(pid, SYS_FS_READ, ERR_INVALID, "buffer write failed (out of bounds)");
             proc.regs.V[0] = ERR_INVALID;
             proc.regs.V[0xF] = 1;
             return SyscallOutcome::Completed;
@@ -1823,13 +1848,16 @@ pub mod kernel {
         let fd = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val as u8,
             Err(_) => {
+                log_syscall_error(pid, SYS_FS_CLOSE, ERR_INVALID, "syscall frame too small for fd");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
             }
         };
         if let Err(err) = kernel.fs_close_fd(pid, fd) {
-            proc.regs.V[0] = Kernel::fs_error_to_code(err);
+            let code = Kernel::fs_error_to_code(err);
+            log_syscall_error(pid, SYS_FS_CLOSE, code, "file close failed");
+            proc.regs.V[0] = code;
             proc.regs.V[0xF] = 1;
             return SyscallOutcome::Completed;
         }
@@ -1892,10 +1920,11 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_dbg_list(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+    fn sys_dbg_list(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
         let out_ptr = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_DBG_LIST, ERR_INVALID, "syscall frame too small for out_ptr");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1904,6 +1933,7 @@ pub mod kernel {
         let max_entries = match Kernel::syscall_arg(proc, 1) {
             Ok(val) => val as usize,
             Err(_) => {
+                log_syscall_error(pid, SYS_DBG_LIST, ERR_INVALID, "syscall frame too small for max_entries");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1933,6 +1963,7 @@ pub mod kernel {
 
             let addr = out_ptr as u32 + (count * DBG_PROC_RECORD_SIZE) as u32;
             if proc.write_bytes(addr, &record).is_err() {
+                log_syscall_error(pid, SYS_DBG_LIST, ERR_INVALID, "record write failed (out of bounds)");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1945,10 +1976,11 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_dbg_regs(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+    fn sys_dbg_regs(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
         let target_pid = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val as u32,
             Err(_) => {
+                log_syscall_error(pid, SYS_DBG_REGS, ERR_INVALID, "syscall frame too small for target_pid");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1957,6 +1989,7 @@ pub mod kernel {
         let out_ptr = match Kernel::syscall_arg(proc, 1) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_DBG_REGS, ERR_INVALID, "syscall frame too small for out_ptr");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1966,6 +1999,7 @@ pub mod kernel {
         let entry = match kernel.procs.get_mut(&target_pid) {
             Some(val) => val,
             None => {
+                log_syscall_error(pid, SYS_DBG_REGS, ERR_NOT_FOUND, "target process not found");
                 proc.regs.V[0] = ERR_NOT_FOUND;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -1981,6 +2015,7 @@ pub mod kernel {
         record.push(regs.ST);
 
         if proc.write_bytes(out_ptr as u32, &record).is_err() {
+            log_syscall_error(pid, SYS_DBG_REGS, ERR_INVALID, "record write failed (out of bounds)");
             proc.regs.V[0] = ERR_INVALID;
             proc.regs.V[0xF] = 1;
             return SyscallOutcome::Completed;
@@ -1991,10 +2026,11 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_dbg_mem_read(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+    fn sys_dbg_mem_read(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
         let target_pid = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val as u32,
             Err(_) => {
+                log_syscall_error(pid, SYS_DBG_MEM_READ, ERR_INVALID, "syscall frame too small for target_pid");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -2003,6 +2039,7 @@ pub mod kernel {
         let addr = match Kernel::syscall_arg(proc, 1) {
             Ok(val) => val as u32,
             Err(_) => {
+                log_syscall_error(pid, SYS_DBG_MEM_READ, ERR_INVALID, "syscall frame too small for addr");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -2011,6 +2048,7 @@ pub mod kernel {
         let len = match Kernel::syscall_arg(proc, 2) {
             Ok(val) => val as usize,
             Err(_) => {
+                log_syscall_error(pid, SYS_DBG_MEM_READ, ERR_INVALID, "syscall frame too small for len");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -2019,6 +2057,7 @@ pub mod kernel {
         let out_ptr = match Kernel::syscall_arg(proc, 3) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_DBG_MEM_READ, ERR_INVALID, "syscall frame too small for out_ptr");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -2028,6 +2067,7 @@ pub mod kernel {
         let entry = match kernel.procs.get_mut(&target_pid) {
             Some(val) => val,
             None => {
+                log_syscall_error(pid, SYS_DBG_MEM_READ, ERR_NOT_FOUND, "target process not found");
                 proc.regs.V[0] = ERR_NOT_FOUND;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -2036,12 +2076,14 @@ pub mod kernel {
         let data = match entry.proc.read_bytes(addr, len) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_DBG_MEM_READ, ERR_INVALID, "target memory read failed (out of bounds)");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
             }
         };
         if proc.write_bytes(out_ptr as u32, &data).is_err() {
+            log_syscall_error(pid, SYS_DBG_MEM_READ, ERR_INVALID, "buffer write failed (out of bounds)");
             proc.regs.V[0] = ERR_INVALID;
             proc.regs.V[0xF] = 1;
             return SyscallOutcome::Completed;
@@ -2052,10 +2094,11 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_dbg_mem_write(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+    fn sys_dbg_mem_write(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
         let target_pid = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val as u32,
             Err(_) => {
+                log_syscall_error(pid, SYS_DBG_MEM_WRITE, ERR_INVALID, "syscall frame too small for target_pid");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -2064,6 +2107,7 @@ pub mod kernel {
         let addr = match Kernel::syscall_arg(proc, 1) {
             Ok(val) => val as u32,
             Err(_) => {
+                log_syscall_error(pid, SYS_DBG_MEM_WRITE, ERR_INVALID, "syscall frame too small for addr");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -2072,6 +2116,7 @@ pub mod kernel {
         let len = match Kernel::syscall_arg(proc, 2) {
             Ok(val) => val as usize,
             Err(_) => {
+                log_syscall_error(pid, SYS_DBG_MEM_WRITE, ERR_INVALID, "syscall frame too small for len");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -2080,6 +2125,7 @@ pub mod kernel {
         let in_ptr = match Kernel::syscall_arg(proc, 3) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_DBG_MEM_WRITE, ERR_INVALID, "syscall frame too small for in_ptr");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -2089,6 +2135,7 @@ pub mod kernel {
         let entry = match kernel.procs.get_mut(&target_pid) {
             Some(val) => val,
             None => {
+                log_syscall_error(pid, SYS_DBG_MEM_WRITE, ERR_NOT_FOUND, "target process not found");
                 proc.regs.V[0] = ERR_NOT_FOUND;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -2097,12 +2144,14 @@ pub mod kernel {
         let data = match proc.read_bytes(in_ptr as u32, len) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_DBG_MEM_WRITE, ERR_INVALID, "buffer read failed (out of bounds)");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
             }
         };
         if entry.proc.write_bytes(addr, &data).is_err() {
+            log_syscall_error(pid, SYS_DBG_MEM_WRITE, ERR_INVALID, "target memory write failed (out of bounds)");
             proc.regs.V[0] = ERR_INVALID;
             proc.regs.V[0xF] = 1;
             return SyscallOutcome::Completed;
@@ -2113,10 +2162,11 @@ pub mod kernel {
         SyscallOutcome::Completed
     }
 
-    fn sys_dbg_trace_read(kernel: &mut Kernel, _pid: u32, proc: &mut Proc) -> SyscallOutcome {
+    fn sys_dbg_trace_read(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
         let out_ptr = match Kernel::syscall_arg(proc, 0) {
             Ok(val) => val,
             Err(_) => {
+                log_syscall_error(pid, SYS_DBG_TRACE_READ, ERR_INVALID, "syscall frame too small for out_ptr");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -2125,6 +2175,7 @@ pub mod kernel {
         let max_records = match Kernel::syscall_arg(proc, 1) {
             Ok(val) => val as usize,
             Err(_) => {
+                log_syscall_error(pid, SYS_DBG_TRACE_READ, ERR_INVALID, "syscall frame too small for max_records");
                 proc.regs.V[0] = ERR_INVALID;
                 proc.regs.V[0xF] = 1;
                 return SyscallOutcome::Completed;
@@ -2145,12 +2196,141 @@ pub mod kernel {
         }
 
         if proc.write_bytes(out_ptr as u32, &data).is_err() {
+            log_syscall_error(pid, SYS_DBG_TRACE_READ, ERR_INVALID, "buffer write failed (out of bounds)");
             proc.regs.V[0] = ERR_INVALID;
             proc.regs.V[0xF] = 1;
             return SyscallOutcome::Completed;
         }
 
         proc.regs.V[0] = count.min(0xFF) as u8;
+        proc.regs.V[0xF] = 0;
+        SyscallOutcome::Completed
+    }
+
+    fn sys_perf_mem_stats(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let out_ptr = match Kernel::syscall_arg(proc, 0) {
+            Ok(val) => val,
+            Err(_) => {
+                log_syscall_error(pid, SYS_PERF_MEM_STATS, ERR_INVALID, "syscall frame too small for out_ptr");
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        let mem = match kernel.mem.lock() {
+            Ok(mem) => mem,
+            Err(_) => {
+                log_syscall_error(pid, SYS_PERF_MEM_STATS, ERR_INVALID, "failed to lock shared memory");
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        // Calculate stats
+        const PHYS_PAGE_COUNT: u16 = 256;
+        let total_pages = PHYS_PAGE_COUNT;
+
+        // Count used pages by checking bitmap
+        let used_pages = mem.used_pages() as u16;
+
+        // Count free regions (fragmentation indicator)
+        let free_regions = mem.free_regions() as u16;
+
+        // Build stats struct (10 bytes)
+        let mut stats = Vec::with_capacity(10);
+        stats.extend_from_slice(&total_pages.to_be_bytes());
+        stats.extend_from_slice(&used_pages.to_be_bytes());
+        stats.extend_from_slice(&free_regions.to_be_bytes());
+        stats.extend_from_slice(&[0u8; 4]); // Reserved
+
+        drop(mem); // Release the lock before writing to proc memory
+
+        if proc.write_bytes(out_ptr as u32, &stats).is_err() {
+            log_syscall_error(pid, SYS_PERF_MEM_STATS, ERR_INVALID, "stats write failed (out of bounds)");
+            proc.regs.V[0] = ERR_INVALID;
+            proc.regs.V[0xF] = 1;
+            return SyscallOutcome::Completed;
+        }
+
+        proc.regs.V[0] = 0;
+        proc.regs.V[0xF] = 0;
+        SyscallOutcome::Completed
+    }
+
+    fn sys_perf_proc_info(kernel: &mut Kernel, pid: u32, proc: &mut Proc) -> SyscallOutcome {
+        let target_pid = match Kernel::syscall_arg(proc, 0) {
+            Ok(val) => val as u32,
+            Err(_) => {
+                log_syscall_error(pid, SYS_PERF_PROC_INFO, ERR_INVALID, "syscall frame too small for target_pid");
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+        let out_ptr = match Kernel::syscall_arg(proc, 1) {
+            Ok(val) => val,
+            Err(_) => {
+                log_syscall_error(pid, SYS_PERF_PROC_INFO, ERR_INVALID, "syscall frame too small for out_ptr");
+                proc.regs.V[0] = ERR_INVALID;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        // If target_pid is 0, use calling process's PID
+        let actual_pid = if target_pid == 0 { pid } else { target_pid };
+
+        let entry = match kernel.procs.get(&actual_pid) {
+            Some(val) => val,
+            None => {
+                log_syscall_error(pid, SYS_PERF_PROC_INFO, ERR_NOT_FOUND, "target process not found");
+                proc.regs.V[0] = ERR_NOT_FOUND;
+                proc.regs.V[0xF] = 1;
+                return SyscallOutcome::Completed;
+            }
+        };
+
+        // Determine state: 0=ready, 1=blocked, 2=exited
+        let state = match entry.state {
+            ProcState::Running => 0u16,
+            ProcState::Blocked => 1u16,
+            ProcState::Exited => 2u16,
+        };
+
+        // Get process information
+        let vm_pages = entry.proc.page_table.len() as u16;
+        let stack_ptr = entry.proc.regs.SP;
+        let pc = entry.proc.regs.PC;
+        let input_mode = match entry.proc.input_mode {
+            InputMode::Line => 0u16,
+            InputMode::Byte => 1u16,
+        };
+        let console_mode = match entry.proc.console_mode {
+            ConsoleMode::Display => 0u16,
+            ConsoleMode::Host => 1u16,
+        };
+
+        // Build process info struct (16 bytes)
+        let mut info = Vec::with_capacity(16);
+        info.extend_from_slice(&(actual_pid as u16).to_be_bytes());
+        info.extend_from_slice(&state.to_be_bytes());
+        info.extend_from_slice(&vm_pages.to_be_bytes());
+        info.extend_from_slice(&stack_ptr.to_be_bytes());
+        info.extend_from_slice(&pc.to_be_bytes());
+        info.extend_from_slice(&input_mode.to_be_bytes());
+        info.extend_from_slice(&console_mode.to_be_bytes());
+        info.extend_from_slice(&[0u8; 2]); // Reserved
+
+        if proc.write_bytes(out_ptr as u32, &info).is_err() {
+            log_syscall_error(pid, SYS_PERF_PROC_INFO, ERR_INVALID, "info write failed (out of bounds)");
+            proc.regs.V[0] = ERR_INVALID;
+            proc.regs.V[0xF] = 1;
+            return SyscallOutcome::Completed;
+        }
+
+        proc.regs.V[0] = 1;
         proc.regs.V[0xF] = 0;
         SyscallOutcome::Completed
     }

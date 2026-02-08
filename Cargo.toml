@@ -12,6 +12,23 @@ fs_write = []  # Enable filesystem write operations (disabled by default for saf
 minifb = "0.28.0"
 chip8_core = { path = "chip8_core" }
 
+# Benchmarking infrastructure (requires Rust 1.81+)
+# Uncomment when Rust version is upgraded:
+# [dev-dependencies]
+# criterion = { version = "0.5", features = ["html_reports"] }
+#
+# [[bench]]
+# name = "allocator"
+# harness = false
+#
+# [[bench]]
+# name = "syscalls"
+# harness = false
+#
+# [[bench]]
+# name = "opcodes"
+# harness = false
+
 [workspace]
 members = [
     ".",
